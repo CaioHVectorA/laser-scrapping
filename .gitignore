@@ -1,0 +1,23 @@
+# Node dependencies
+node_modules/
+
+# Build output
+dist/
+
+# Environment variables
+.env
+
+# Output Excel files
+output/
+*.xlsx
+
+# Playwright artifacts
+test-results/
+playwright-report/
+blob-report/
+playwright/.cache/
+
+# OS and IDE files
+.DS_Store
+.vscode/
+.idea/
