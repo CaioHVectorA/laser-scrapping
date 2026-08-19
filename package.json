@@ -10,6 +10,7 @@
     "start:bun": "bun src/index.ts",
     "start:bun:headed": "HEADLESS=false bun src/index.ts",
     "start:node": "tsx src/index.ts",
+    "convert": "bun src/convert.ts",
     "dev": "bun --watch src/index.ts",
     "check": "tsc --noEmit",
     "build": "tsc"

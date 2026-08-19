@@ -1,6 +1,6 @@
-# 📘 Documentação de Funcionamento das Páginas & Extração de Impressão (`page_id=402`)
+# 📘 Documentação de Funcionamento das Páginas, Banco de Dados & Conversor de Laudos CSV
 
-Esta documentação descreve o mapeamento completo de páginas, fluxo de navegação, seletores da folha de impressão (`print=Y`), esquema do banco de dados **SQLite (`bun:sqlite`)** e formatos de exportação (CSV/Excel) do sistema MedLaser Brasil.
+Esta documentação descreve o mapeamento completo de páginas, fluxo de navegação, seletores da folha de impressão, esquema do banco de dados **SQLite (`bun:sqlite`)**, exportação geral (CSV/Excel) e o **conversor desacoplado de laudos (`src/convert.ts`)**.
 
 ---
 
@@ -10,15 +10,18 @@ No sistema MedLaser Brasil, o fluxo de consulta e impressão é estruturado em d
 
 1. **Central de Ordens de Serviço (Abas / Listagem)**: `https://medlaserbrasil.com.br/?page_id=343`
    - Onde ficam agrupadas as **6 abas / filtros de status** (*Aguardando Análise*, *Aguardando aprovação*, *Em execução*, *Finalizada*, *Entregue*, *Cancelada*).
-   - Exibe a tabela simplificada `#tabela_edicao` com os IDs de cada OS.
+   - Exibe os painéis com as listas de OSs no DOM.
 
-2. **Folha de Impressão Padrão (Print View)**: `https://medlaserbrasil.com.br/?page_id=402&cod_registro=<OS_ID>&print=Y`
-   - O modelo de visualização de impressão de **todas as abas** utiliza o **`page_id=402`**.
-   - Ao passar o parâmetro `cod_registro=<OS_ID>` e `print=Y`, a página renderiza o documento impresso completo da Ordem de Serviço.
+2. **Páginas de Impressão por Aba (Print View)**:
+   - **Aguardando Análise**: `page_id=402`
+   - **Aguardando aprovação**: `page_id=425`
+   - **Em execução**: `page_id=440`
+   - **Finalizada**: `page_id=460`
+   - **Entregue**: `page_id=465`
 
 ---
 
-## 📄 2. Estrutura de Dados da Folha de Impressão (`page_id=402`)
+## 📄 2. Estrutura de Dados da Folha de Impressão
 
 A folha de impressão é dividida nas seguintes seções:
 
@@ -51,7 +54,7 @@ A folha de impressão é dividida nas seguintes seções:
 
 ## 🗄️ 3. Esquema do Banco de Dados SQLite (`bun:sqlite`)
 
-Os dados raspados da folha de impressão são salvos de forma otimizada no arquivo SQLite `./output/ordens_servico.sqlite` com a seguinte estrutura de tabela:
+Os dados raspados das folhas de impressão são salvos de forma otimizada no arquivo SQLite `./output/ordens_servico.sqlite` com o seguinte esquema:
 
 ```sql
 CREATE TABLE IF NOT EXISTS ordens_servico (
@@ -79,28 +82,40 @@ CREATE TABLE IF NOT EXISTS ordens_servico (
 );
 ```
 
-### Operação de Gravação:
-Utiliza a funcionalidade `UPSERT` (`ON CONFLICT(id) DO UPDATE`), garantindo que execuções sucessivas atualizem os registros existentes sem duplicar dados.
-
 ---
 
-## 📄 4. Exportação CSV e Excel
+## 📑 4. Conversor Desacoplado de Laudo de Calibração (`src/convert.ts`)
 
-Além do banco de dados SQLite, a automação exporta simultaneamente para:
-
-- **`output/ordens_servico.csv`**: Arquivo CSV codificado em **UTF-8 BOM (`\uFEFF`)** com delimitador `;`, permitindo abertura imediata no Microsoft Excel e LibreOffice com formatação correta de caracteres acentuados.
-- **`output/ordens_servico.xlsx`**: Planilha Excel com cabeçalhos estilizados em azul corporativo e ajuste automático de largura de colunas.
-
----
-
-## 🚀 5. Como Executar com Bun
-
-Para rodar o scraper utilizando a runtime **Bun** e o driver **`bun:sqlite`**:
+O módulo `src/convert.ts` opera de forma totalmente independente do navegador (sem scraping). Ele consulta o banco SQLite local (`output/ordens_servico.sqlite`) pelo código da OS e gera o relatório no modelo oficial de 7 seções:
 
 ```bash
-# Executar a automação completa
+# Como executar para uma OS específica:
+bun src/convert.ts 7596
+```
+
+### Estrutura do Laudo Gerado (`output/laudo_OS_<ID>.csv`):
+1. **1 - CONTRATANTE**: Preenchido dinamicamente com dados da empresa cliente (`cliente_nome`, `cliente_cpf_cnpj`, `cliente_endereco`, `cliente_telefones`).
+2. **2 - LABORATÓRIO E TÉCNICO**: Dados do Laboratório MedLaser e nome do responsável técnico (`tecnico_responsavel`).
+3. **3 - EQUIPAMENTOS E PROCEDIMENTOS**: Normas EA-4/02, t-Student, especificações do medidor Coherent e tabela de medições.
+4. **4 - CONDIÇÕES DO ENSAIO**: Temperatura (+25°C), Humidade (80%), Pressão, Voltagem e Frequência.
+5. **5 - DETALHES DO EQUIPAMENTO**: Tipo, Modelo, Número de Série (`equipamento_codigo`) e Ordem de Serviço (`id`).
+6. **6 - ENSAIO**: Medições individuais por frequência (3Hz, 5Hz, 8Hz, 10Hz, 12Hz).
+7. **7 - CONSIDERAÇÕES FINAIS**: Declaração de aptidão, assinatura do técnico, data por extenso e checklist de verificação (Carcaça, Pedais, Painel, Cabo, Limpeza interna/externa).
+
+---
+
+## 🚀 5. Como Executar
+
+### Scraping Completo (Popula o Banco SQLite, CSV e Excel):
+```bash
+# Modo padrão (Headless)
 bun run start
 
-# Executar exibindo a janela do navegador (headed mode)
-bun run start:bun:headed
+# Modo visível (Headed)
+bun run start:headed
+```
+
+### Gerar Laudo CSV Individual de uma OS (sem navegar):
+```bash
+bun src/convert.ts 7596
 ```
