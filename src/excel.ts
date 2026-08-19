@@ -4,73 +4,84 @@ import path from 'node:path';
 import type { ScrapedItem } from './types/index.js';
 
 /**
- * Salva a lista de itens extraídos em um arquivo Excel (.xlsx).
- *
- * @param items Lista de objetos extraídos pelo scraper
- * @param filePath Caminho completo onde a planilha será salva
+ * Salva a lista de itens detalhados da folha de impressão em uma planilha Excel (.xlsx).
  */
 export async function exportToExcel(items: ScrapedItem[], filePath: string): Promise<string> {
-  // Garante que o diretório de destino existe
   const dir = path.dirname(filePath);
   if (!fs.existsSync(dir)) {
     fs.mkdirSync(dir, { recursive: true });
   }
 
   const workbook = new ExcelJS.Workbook();
-  workbook.creator = 'Automação Scraper';
+  workbook.creator = 'Automação Scraper MedLaser';
   workbook.created = new Date();
 
-  const worksheet = workbook.addWorksheet('Dados Extraídos', {
+  const worksheet = workbook.addWorksheet('Impressão OSs', {
     views: [{ showGridLines: true }]
   });
 
-  // Configuração das colunas
   worksheet.columns = [
-    { header: 'ID', key: 'id', width: 8 },
-    { header: 'Título / Citação', key: 'title', width: 50 },
-    { header: 'Autor', key: 'author', width: 25 },
-    { header: 'Tags', key: 'tags', width: 30 },
-    { header: 'URL de Origem', key: 'url', width: 35 },
-    { header: 'Data da Extração', key: 'scrapedAt', width: 22 },
+    { header: 'ID', key: 'id', width: 10 },
+    { header: 'Situação', key: 'situacao', width: 18 },
+    { header: 'Data Entrada', key: 'dataEntrada', width: 18 },
+    { header: 'Cliente Nome', key: 'clienteNome', width: 35 },
+    { header: 'CPF/CNPJ', key: 'clienteCpfCnpj', width: 18 },
+    { header: 'Endereço', key: 'clienteEndereco', width: 40 },
+    { header: 'Telefones', key: 'clienteTelefones', width: 22 },
+    { header: 'Email', key: 'clienteEmail', width: 25 },
+    { header: 'Equipamento Modelo', key: 'equipamentoModelo', width: 25 },
+    { header: 'Equipamento Código', key: 'equipamentoCodigo', width: 18 },
+    { header: 'Linha de Uso', key: 'equipamentoLinhaUso', width: 15 },
+    { header: 'Dimensões', key: 'equipamentoDimensoes', width: 25 },
+    { header: 'Descrição Equipamento', key: 'equipamentoDescricao', width: 30 },
+    { header: 'Acessórios', key: 'equipamentoAcessorios', width: 30 },
+    { header: 'Tipo de Serviço', key: 'servicoTipo', width: 20 },
+    { header: 'Técnico Resp.', key: 'tecnicoResp', width: 18 },
+    { header: 'Descrição Problema', key: 'descricaoProblema', width: 40 },
+    { header: 'Valor Orçamento (R$)', key: 'valorOrcamento', width: 20 },
+    { header: 'Observações', key: 'observacoes', width: 35 },
+    { header: 'Laudo Técnico', key: 'laudoTecnico', width: 35 },
+    { header: 'Data Extração', key: 'scrapedAt', width: 20 },
   ];
 
-  // Estilização do cabeçalho (Linha 1)
   const headerRow = worksheet.getRow(1);
   headerRow.font = { name: 'Calibri', size: 11, bold: true, color: { argb: 'FFFFFF' } };
   headerRow.fill = {
     type: 'pattern',
     pattern: 'solid',
-    fgColor: { argb: '1F4E78' } // Azul escuro corporativo
+    fgColor: { argb: '1F4E78' }
   };
   headerRow.alignment = { vertical: 'middle', horizontal: 'center' };
   headerRow.height = 24;
 
-  // Adiciona os dados
   for (const item of items) {
     const row = worksheet.addRow({
       id: item.id,
-      title: item.title,
-      author: item.author,
-      tags: Array.isArray(item.tags) ? item.tags.join(', ') : item.tags,
-      url: item.url || '',
+      situacao: item.situacao,
+      dataEntrada: item.dataEntrada,
+      clienteNome: item.clienteNome,
+      clienteCpfCnpj: item.clienteCpfCnpj,
+      clienteEndereco: item.clienteEndereco,
+      clienteTelefones: item.clienteTelefones,
+      clienteEmail: item.clienteEmail,
+      equipamentoModelo: item.equipamentoModelo,
+      equipamentoCodigo: item.equipamentoCodigo,
+      equipamentoLinhaUso: item.equipamentoLinhaUso,
+      equipamentoDimensoes: item.equipamentoDimensoes,
+      equipamentoDescricao: item.equipamentoDescricao,
+      equipamentoAcessorios: item.equipamentoAcessorios,
+      servicoTipo: item.servicoTipo,
+      tecnicoResp: item.tecnicoResp,
+      descricaoProblema: item.descricaoProblema,
+      valorOrcamento: item.valorOrcamento,
+      observacoes: item.observacoes,
+      laudoTecnico: item.laudoTecnico,
       scrapedAt: item.scrapedAt
     });
 
     row.height = 20;
     row.alignment = { vertical: 'middle', wrapText: true };
   }
-
-  // Ajuste automático leve da largura das colunas
-  worksheet.columns.forEach((column) => {
-    let maxLen = column.header ? column.header.length : 10;
-    column.eachCell?.({ includeEmpty: false }, (cell) => {
-      const cellVal = cell.value ? cell.value.toString() : '';
-      if (cellVal.length > maxLen) {
-        maxLen = cellVal.length;
-      }
-    });
-    column.width = Math.min(Math.max(maxLen + 4, 12), 60);
-  });
 
   await workbook.xlsx.writeFile(filePath);
   return filePath;

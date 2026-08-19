@@ -1,14 +1,36 @@
 /**
- * Interface representando a estrutura genérica de um item extraído da raspagem.
- * Altere ou acrescente campos conforme as necessidades específicas do sistema alvo.
+ * Interface representando a estrutura detalhada de uma Ordem de Serviço (OS)
+ * extraída diretamente da página de impressão (page_id=402).
  */
 export interface ScrapedItem {
-  id: number;
-  title: string;
-  author: string;
-  tags: string[];
-  url?: string;
-  extraInfo?: string;
+  id: string;
+  situacao: string;
+  dataEntrada: string;
+  
+  // Dados do Cliente
+  clienteNome: string;
+  clienteCpfCnpj: string;
+  clienteEndereco: string;
+  clienteTelefones: string;
+  clienteEmail: string;
+
+  // Dados do Equipamento
+  equipamentoModelo: string;
+  equipamentoCodigo: string;
+  equipamentoLinhaUso: string;
+  equipamentoDimensoes: string;
+  equipamentoDescricao: string;
+  equipamentoAcessorios: string;
+
+  // Dados do Serviço
+  servicoTipo: string;
+  tecnicoResp: string;
+  descricaoProblema: string;
+  valorOrcamento: number | string;
+  observacoes: string;
+  laudoTecnico: string;
+
+  // Metadados
   scrapedAt: string;
 }
 
@@ -19,4 +41,5 @@ export interface ScraperOptions {
   url: string;
   headless: boolean;
   timeoutMs?: number;
+  maxItems?: number;
 }

@@ -1,12 +1,16 @@
 {
   "name": "laser-widget-scraper",
   "version": "1.0.0",
-  "description": "Base de automação para web scraping e exportação de dados para Excel em TypeScript",
+  "description": "Base de automação para web scraping e exportação de dados para Excel, CSV e SQLite em TypeScript com Bun",
   "main": "dist/index.js",
   "type": "module",
   "scripts": {
-    "start": "tsx src/index.ts",
-    "dev": "tsx watch src/index.ts",
+    "start": "bun src/index.ts",
+    "start:headed": "HEADLESS=false bun src/index.ts",
+    "start:bun": "bun src/index.ts",
+    "start:bun:headed": "HEADLESS=false bun src/index.ts",
+    "start:node": "tsx src/index.ts",
+    "dev": "bun --watch src/index.ts",
     "check": "tsc --noEmit",
     "build": "tsc"
   },
@@ -14,6 +18,8 @@
     "scraping",
     "automation",
     "playwright",
+    "sqlite",
+    "bun",
     "excel",
     "typescript"
   ],
