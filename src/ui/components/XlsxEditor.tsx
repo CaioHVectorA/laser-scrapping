@@ -3,7 +3,7 @@ import ExcelJS from 'exceljs';
 import { parseXlsx, randomizeXlsx, listXlsxFiles } from '../api.js';
 import { FileSpreadsheet, Sparkles, Undo, Redo, Save, Upload, FolderOpen, Info, ChevronDown, Layers, CheckSquare, Square, Filter, BarChart3 } from 'lucide-react';
 import { MeasurementChart } from './MeasurementChart.js';
-import { applyFormulasToMatrix } from '../formulas.js';
+import { applyFormulasToMatrix, generateValidRowMeasurements, detectRowColumnMap } from '../formulas.js';
 
 interface XlsxCellData {
   address: string;
@@ -379,10 +379,10 @@ export const XlsxEditor: React.FC = () => {
     setParsedData(updated);
   };
 
-  // Aplica a variação matemática estrita ±(val * maxPercent / 100)
+  // Aplica a variação matemática garantindo estritamente a conformidade com os limites de tolerância (Tol. Min <= ERRO TOTAL <= tol Max)
   const handleRandomize = async () => {
     if (!parsedData) return;
-    setStatusMsg(`⏳ Aplicando variação estrita de ±${maxPercent}%...`);
+    setStatusMsg(`⏳ Aplicando variação estrita (garantindo conformidade com os limites de tolerância)...`);
 
     let alteredCount = 0;
 
@@ -394,38 +394,102 @@ export const XlsxEditor: React.FC = () => {
         const worksheet = workbookRef.current.getWorksheet(activeSheet?.name);
 
         if (activeSheet) {
-          activeSheet.matrix.forEach((row) => {
-            row.forEach((cellData) => {
-              if (!cellData) return;
-              const isColSelected = selectedColumns.has(cellData.colLetter);
+          const colMap = detectRowColumnMap(activeSheet.matrix);
 
-              if (cellData.isNumeric && cellData.isSelectedForVariation && isColSelected) {
-                const val = cellData.value as number;
-                const deltaMax = Math.abs(val) * (maxPercent / 100);
-                const randomFactor = Math.random() * 2 - 1; // [-1.0, +1.0]
-                const delta = randomFactor * deltaMax;
-                let newVal = val + delta;
-                newVal = Math.round(newVal * 100) / 100; // Arredonda estritamente para 2 casas decimais
+          if (colMap) {
+            // Mapeamento analítico: garante que o ERRO TOTAL recalculado fique rigorosamente dentro de [-20%, +20%]
+            for (let r = colMap.headerRow; r < activeSheet.matrix.length; r++) {
+              const row = activeSheet.matrix[r];
+              if (!row) continue;
 
-                cellData.value = newVal;
-                cellData.displayValue = String(newVal).replace('.', ',');
+              const baseCell = row[colMap.colBase - 1];
+              if (!baseCell) continue;
+              const baseVal = typeof baseCell.value === 'number'
+                ? baseCell.value
+                : parseFloat(String(baseCell.displayValue || baseCell.value || '').replace(',', '.'));
+              if (isNaN(baseVal) || baseVal <= 0) continue;
 
-                if (worksheet) {
-                  try {
-                    worksheet.getRow(cellData.row).getCell(cellData.col).value = newVal;
-                  } catch {}
+              // Coleta as medições atuais
+              const currentMeds: number[] = [];
+              const selectedIndicesSet = new Set<number>();
+
+              colMap.colMeds.forEach((cIdx, idx) => {
+                const cell = row[cIdx - 1];
+                if (cell) {
+                  const v = typeof cell.value === 'number'
+                    ? cell.value
+                    : parseFloat(String(cell.displayValue || '').replace(',', '.'));
+                  currentMeds.push(!isNaN(v) ? v : baseVal);
+                  if (cell.isSelectedForVariation && selectedColumns.has(cell.colLetter)) {
+                    selectedIndicesSet.add(idx);
+                  }
                 }
-                alteredCount++;
-              }
-            });
-          });
+              });
 
-          // Aplica recálculo de fórmulas nas colunas dependentes (media, ERRO TOTAL, desvPadrao, incerteza, k, confianca, tendencia)
+              let sheetMedia: number | undefined = undefined;
+              if (colMap.colMedia > 0 && row[colMap.colMedia - 1]) {
+                const mCell = row[colMap.colMedia - 1];
+                const v = typeof mCell?.value === 'number'
+                  ? mCell.value
+                  : parseFloat(String(mCell?.displayValue || '').replace(',', '.'));
+                if (!isNaN(v) && v > 0) sheetMedia = v;
+              }
+
+              // Gera medições garantindo que o ERRO TOTAL nunca ultrapasse a tolerância
+              const validMeds = generateValidRowMeasurements(baseVal, currentMeds, maxPercent, selectedIndicesSet, sheetMedia);
+
+              colMap.colMeds.forEach((cIdx, idx) => {
+                if (selectedIndicesSet.has(idx)) {
+                  const cell = row[cIdx - 1];
+                  if (cell) {
+                    const newVal = validMeds[idx];
+                    cell.value = newVal;
+                    cell.displayValue = String(newVal).replace('.', ',');
+
+                    if (worksheet) {
+                      try {
+                        worksheet.getRow(r + 1).getCell(cIdx).value = newVal;
+                      } catch {}
+                    }
+                    alteredCount++;
+                  }
+                }
+              });
+            }
+          } else {
+            // Fallback genérico caso a planilha tenha outro layout
+            activeSheet.matrix.forEach((row) => {
+              row.forEach((cellData) => {
+                if (!cellData) return;
+                const isColSelected = selectedColumns.has(cellData.colLetter);
+
+                if (cellData.isNumeric && cellData.isSelectedForVariation && isColSelected) {
+                  const val = cellData.value as number;
+                  const deltaMax = Math.abs(val) * (maxPercent / 100);
+                  const randomFactor = Math.random() * 2 - 1;
+                  const delta = randomFactor * deltaMax;
+                  let newVal = Math.round((val + delta) * 100) / 100;
+
+                  cellData.value = newVal;
+                  cellData.displayValue = String(newVal).replace('.', ',');
+
+                  if (worksheet) {
+                    try {
+                      worksheet.getRow(cellData.row).getCell(cellData.col).value = newVal;
+                    } catch {}
+                  }
+                  alteredCount++;
+                }
+              });
+            });
+          }
+
+          // Recalcula todas as fórmulas dependentes (media, ERRO TOTAL, desvPadrao, incerteza, k, confianca, tendencia)
           applyFormulasToMatrix(activeSheet.matrix, worksheet);
         }
 
         pushHistoryState(nextParsed, `Variação ±${maxPercent}% (${alteredCount} células)`);
-        setStatusMsg(`✨ ${alteredCount} medições variadas (±${maxPercent}%). Fórmulas recalculadas: Média, ERRO TOTAL, DesvPadrão, Incerteza, Fator k, Confiança e Tendência.`);
+        setStatusMsg(`✨ ${alteredCount} medições variadas (±${maxPercent}%). Erro Total garantido dentro dos limites de tolerância.`);
       } else {
         // Fallback para arquivo do servidor
         const tempOutput = parsedData.filePath.replace(/\.xlsx$/i, '_temp_variado.xlsx');
@@ -849,13 +913,22 @@ export const XlsxEditor: React.FC = () => {
             )}
           </div>
 
-          {/* Chart Preview */}
+          {/* Chart Preview — 40% da tela, centralizado */}
           {showChart && activeSheet && (
-            <div style={{ padding: '12px', borderTop: '1px solid #27272a' }}>
-              <MeasurementChart
-                sheetData={activeSheet}
-                frequencyLabel={activeSheet.name}
-              />
+            <div style={{
+              padding: '16px 12px',
+              borderTop: '1px solid #27272a',
+              display: 'flex',
+              justifyContent: 'center',
+              width: '100%',
+              backgroundColor: '#09090b'
+            }}>
+              <div style={{ width: '40%', minWidth: '380px', maxWidth: '100%' }}>
+                <MeasurementChart
+                  sheetData={activeSheet}
+                  frequencyLabel={activeSheet.name}
+                />
+              </div>
             </div>
           )}
 

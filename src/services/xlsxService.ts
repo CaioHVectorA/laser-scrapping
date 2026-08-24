@@ -1,7 +1,7 @@
 import ExcelJS from 'exceljs';
 import fs from 'node:fs';
 import path from 'node:path';
-import { applyFormulasToMatrix } from '../ui/formulas.js';
+import { applyFormulasToMatrix, generateValidRowMeasurements, detectRowColumnMap } from '../ui/formulas.js';
 
 export interface XlsxCellData {
   address: string;
@@ -199,46 +199,72 @@ export async function randomizeMeasurements(
   await workbook.xlsx.readFile(filePath);
 
   const changes: CellChange[] = [];
+  const parsed = await parseXlsx(filePath);
 
-  workbook.eachSheet((worksheet) => {
-    const sheetName = worksheet.name;
-    worksheet.eachRow((row, rowNumber) => {
-      row.eachCell((cell) => {
-        const address = cell.address;
+  for (const sheet of parsed.sheets) {
+    const worksheet = workbook.getWorksheet(sheet.name);
+    if (!worksheet) continue;
 
-        if (targetAddresses && targetAddresses.length > 0 && !targetAddresses.includes(address)) {
-          return;
+    const colMap = detectRowColumnMap(sheet.matrix);
+    if (colMap) {
+      for (let r = colMap.headerRow; r < sheet.matrix.length; r++) {
+        const row = sheet.matrix[r];
+        if (!row) continue;
+
+        const baseCell = row[colMap.colBase - 1];
+        if (!baseCell) continue;
+        const baseVal = typeof baseCell.value === 'number'
+          ? baseCell.value
+          : parseFloat(String(baseCell.displayValue || baseCell.value || '').replace(',', '.'));
+        if (isNaN(baseVal) || baseVal <= 0) continue;
+
+        const currentMeds: number[] = [];
+        colMap.colMeds.forEach((cIdx) => {
+          const cell = row[cIdx - 1];
+          if (cell) {
+            const v = typeof cell.value === 'number'
+              ? cell.value
+              : parseFloat(String(cell.displayValue || '').replace(',', '.'));
+            currentMeds.push(!isNaN(v) ? v : baseVal);
+          }
+        });
+
+        if (currentMeds.length === 0) continue;
+
+        let sheetMedia: number | undefined = undefined;
+        if (colMap.colMedia > 0 && row[colMap.colMedia - 1]) {
+          const mCell = row[colMap.colMedia - 1];
+          const v = typeof mCell?.value === 'number'
+            ? mCell.value
+            : parseFloat(String(mCell?.displayValue || '').replace(',', '.'));
+          if (!isNaN(v) && v > 0) sheetMedia = v;
         }
 
-        let rawVal = cell.value;
-        if (rawVal && typeof rawVal === 'object') {
-          if ('formula' in rawVal) return;
-          if ('result' in rawVal) rawVal = (rawVal as any).result;
-        }
+        const validMeds = generateValidRowMeasurements(baseVal, currentMeds, maxPercent, undefined, sheetMedia);
 
-        const displayVal = cell.text ? String(cell.text).trim() : (rawVal !== null && rawVal !== undefined ? String(rawVal) : '');
-        let numVal = typeof rawVal === 'number' ? rawVal : parseFloat(displayVal.replace(',', '.'));
+        colMap.colMeds.forEach((cIdx, idx) => {
+          const cell = row[cIdx - 1];
+          if (cell) {
+            const oldVal = cell.value;
+            const newVal = validMeds[idx];
+            cell.value = newVal;
 
-        if (!isNaN(numVal) && isFinite(numVal) && isMeasurementCandidate(numVal, displayVal, rowNumber)) {
-          // Fórmula estrita: val + (random * val * maxPercent / 100)
-          const deltaMax = Math.abs(numVal) * (maxPercent / 100);
-          const randomFactor = Math.random() * 2 - 1;
-          const delta = randomFactor * deltaMax;
-          let newVal = numVal + delta;
-          newVal = Math.round(newVal * 100) / 100;
+            const excelCell = worksheet.getRow(r + 1).getCell(cIdx);
+            excelCell.value = newVal;
 
-          cell.value = newVal;
+            changes.push({
+              address: cell.address,
+              sheetName: sheet.name,
+              oldValue: Number(oldVal),
+              newValue: newVal
+            });
+          }
+        });
+      }
+    }
 
-          changes.push({
-            address,
-            sheetName,
-            oldValue: numVal,
-            newValue: newVal
-          });
-        }
-      });
-    });
-  });
+    applyFormulasToMatrix(sheet.matrix, worksheet);
+  }
 
   const dir = path.dirname(outputPath);
   if (!fs.existsSync(dir)) {

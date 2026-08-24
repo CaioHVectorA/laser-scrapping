@@ -124,11 +124,19 @@ function extractChartData(sheetData: any): ChartExtractedData | null {
       }
     }
 
-    // Calcula exatamente com as fórmulas fornecidas:
-    // E2: =MÉDIA(F2:J2), K2: =A2-E2, M2: =DESVPAD.A, N2: =M2/RAIZ(5), O2: =RAIZ(N2^2+0,1^2), P2: =SE(...), Q2: =P2*O2, D2: =K2+Q2
+    // Obtém o valor original de média da planilha
+    let sheetMedia: number | undefined = undefined;
+    if (colMap && colMap.colMedia > 0 && row[colMap.colMedia - 1]) {
+      const mCell = row[colMap.colMedia - 1];
+      const v = typeof mCell?.value === 'number'
+        ? mCell.value
+        : parseFloat(String(mCell?.displayValue || '').replace(',', '.'));
+      if (!isNaN(v) && v > 0) sheetMedia = v;
+    }
+
     let erroTotalVal = 0;
     if (medVals.length > 0) {
-      const calc = calculateRowFormulas(baseNum, medVals);
+      const calc = calculateRowFormulas(baseNum, medVals, sheetMedia);
       erroTotalVal = calc.erroTotal;
     } else if (colMap && row[colMap.colErroTotal1 - 1]) {
       const dCell = row[colMap.colErroTotal1 - 1];

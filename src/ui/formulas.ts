@@ -25,11 +25,15 @@ export interface CalculatedRow {
  * L2: =K2+Q2
  * R2: =E2-A2
  */
-export function calculateRowFormulas(base: number, meds: number[]): CalculatedRow {
+export function calculateRowFormulas(
+  base: number,
+  meds: number[],
+  sheetMedia?: number
+): CalculatedRow {
   const n = meds.length;
   if (n === 0) {
     return {
-      media: 0,
+      media: sheetMedia ?? 0,
       erro: 0,
       desvPadrao: 0,
       incertezaA: 0,
@@ -41,16 +45,19 @@ export function calculateRowFormulas(base: number, meds: number[]): CalculatedRo
     };
   }
 
-  // E2: =MÉDIA(F2:J2)
-  const media = meds.reduce((sum, v) => sum + v, 0) / n;
+  // E2: Usa a Média que veio na planilha (ou a média aritmética como fallback se não fornecida)
+  const media = (sheetMedia !== undefined && !isNaN(sheetMedia) && sheetMedia > 0)
+    ? sheetMedia
+    : (meds.reduce((sum, v) => sum + v, 0) / n);
 
-  // K2: =A2-E2 (Base - Média)
+  // K2: =A2-E2 (Base - Média da Planilha)
   const erro = base - media;
 
-  // M2: =DESVPAD.A(F2:J2) (Desvio padrão amostral com n-1 graus de liberdade)
+  // M2: =DESVPAD.A(F2:J2) (Desvio padrão amostral das medições atuais)
   let desvPadrao = 0;
   if (n > 1) {
-    const variance = meds.reduce((acc, v) => acc + Math.pow(v - media, 2), 0) / (n - 1);
+    const meanMeds = meds.reduce((sum, v) => sum + v, 0) / n;
+    const variance = meds.reduce((acc, v) => acc + Math.pow(v - meanMeds, 2), 0) / (n - 1);
     desvPadrao = Math.sqrt(variance);
   }
 
@@ -61,8 +68,6 @@ export function calculateRowFormulas(base: number, meds: number[]): CalculatedRo
   const incertezaComb = Math.sqrt(Math.pow(incertezaA, 2) + Math.pow(0.1, 2));
 
   // P2: =SE(N2<(O2/2); 2; INV.T.2C(0,05; 4))
-  // Para 95% de confiança (alfa = 0.05) e graus de liberdade gl = n - 1 = 4:
-  // t-Student bicaudal = 2.77644510519
   const tStudent4 = 2.77644510519;
   const k = incertezaA < (incertezaComb / 2) ? 2 : tStudent4;
 
@@ -72,7 +77,7 @@ export function calculateRowFormulas(base: number, meds: number[]): CalculatedRo
   // D2 & L2: =K2+Q2
   const erroTotal = erro + confianca;
 
-  // R2: =E2-A2 (Média - Base)
+  // R2: =E2-A2 (Média da Planilha - Base)
   const tendencia = media - base;
 
   return {
@@ -182,6 +187,7 @@ export function detectRowColumnMap(matrix: any[][]): RowColumnMap | null {
 /**
  * Atualiza dinamicamente na matriz de células (e opcionalmente no worksheet ExcelJS)
  * todas as colunas com fórmulas dependentes das medições med1..med5.
+ * A coluna 'media' (Coluna E) NUNCA é sobrescrita, permanecendo o valor original da planilha.
  */
 export function applyFormulasToMatrix(
   matrix: any[][],
@@ -203,6 +209,16 @@ export function applyFormulasToMatrix(
 
     if (isNaN(baseVal) || baseVal <= 0) continue;
 
+    // Obtém o valor original da coluna 'media' da planilha
+    let sheetMedia: number | undefined = undefined;
+    if (colMap.colMedia > 0 && row[colMap.colMedia - 1]) {
+      const mCell = row[colMap.colMedia - 1];
+      const v = typeof mCell?.value === 'number'
+        ? mCell.value
+        : parseFloat(String(mCell?.displayValue || '').replace(',', '.'));
+      if (!isNaN(v) && v > 0) sheetMedia = v;
+    }
+
     // Coleta os valores atuais de med1..medN
     const medVals: number[] = [];
     for (const cIdx of colMap.colMeds) {
@@ -219,7 +235,7 @@ export function applyFormulasToMatrix(
 
     if (medVals.length === 0) continue;
 
-    const calc = calculateRowFormulas(baseVal, medVals);
+    const calc = calculateRowFormulas(baseVal, medVals, sheetMedia);
 
     const updateCell = (colIdx: number, val: number, isShortDecimal = false) => {
       if (colIdx <= 0 || colIdx > row.length) return;
@@ -249,15 +265,90 @@ export function applyFormulasToMatrix(
       }
     };
 
-    updateCell(colMap.colMedia, calc.media, true);          // E: media
+    // A coluna 'media' (Coluna E) NUNCA é sobrescrita (permanece o que veio na planilha)
     updateCell(colMap.colErroTotal1, calc.erroTotal);       // D: ERRO TOTAL
-    updateCell(colMap.colErro, calc.erro, true);            // K: ERRO
+    updateCell(colMap.colErro, calc.erro, true);            // K: ERRO (= base - media_planilha)
     updateCell(colMap.colErroTotal2, calc.erroTotal);       // L: ERRO TOTAL
     updateCell(colMap.colDesvPadrao, calc.desvPadrao);      // M: desvPadrao
     updateCell(colMap.colIncertezaA, calc.incertezaA);      // N: incerteza (tipo a)
     updateCell(colMap.colIncertezaComb, calc.incertezaComb);// O: Incerteza combinada
     updateCell(colMap.colK, calc.k);                        // P: k
     updateCell(colMap.colConfianca, calc.confianca);        // Q: confianaca
-    updateCell(colMap.colTendencia, calc.tendencia, true);  // R: tendencia
+    updateCell(colMap.colTendencia, calc.tendencia, true);  // R: tendencia (= media_planilha - base)
   }
 }
+
+/**
+ * Gera medições variadas para uma linha de ensaio garantindo que o
+ * ERRO TOTAL resultante (D = K + Q) NUNCA ultrapasse os limites de tolerância:
+ *   Tol. Min <= ERRO TOTAL <= tol Max
+ * Onde:
+ *   tol Max = +20% do valor base (+base * 0.20)
+ *   Tol. Min = -20% do valor base (-base * 0.20)
+ */
+export function generateValidRowMeasurements(
+  baseVal: number,
+  currentMeds: number[],
+  maxPercent: number,
+  selectedIndicesSet?: Set<number>,
+  sheetMedia?: number
+): number[] {
+  const n = currentMeds.length || 5;
+  const tolMax = baseVal * 0.20;
+  const tolMin = baseVal * -0.20;
+
+  const safeUpper = tolMax * 0.85;
+  const safeLower = tolMin * 0.85;
+
+  let bestMeds = [...currentMeds];
+  let bestDistanceToCenter = Infinity;
+
+  // 1. Tenta gerar por perturbação estocástica das medições atuais
+  for (let attempt = 0; attempt < 200; attempt++) {
+    const candidateMeds = currentMeds.map((val, idx) => {
+      if (selectedIndicesSet && !selectedIndicesSet.has(idx)) {
+        return val;
+      }
+      const deltaMax = Math.abs(val) * (maxPercent / 100);
+      const randomFactor = Math.random() * 2 - 1; // [-1.0, +1.0]
+      const delta = randomFactor * deltaMax;
+      return Math.round((val + delta) * 100) / 100;
+    });
+
+    const calc = calculateRowFormulas(baseVal, candidateMeds, sheetMedia);
+
+    if (calc.erroTotal >= safeLower && calc.erroTotal <= safeUpper) {
+      return candidateMeds;
+    }
+
+    if (calc.erroTotal >= tolMin && calc.erroTotal <= tolMax) {
+      const dist = Math.abs(calc.erroTotal);
+      if (dist < bestDistanceToCenter) {
+        bestDistanceToCenter = dist;
+        bestMeds = candidateMeds;
+      }
+    }
+  }
+
+  const testCalc = calculateRowFormulas(baseVal, bestMeds, sheetMedia);
+  if (testCalc.erroTotal >= tolMin && testCalc.erroTotal <= tolMax) {
+    return bestMeds;
+  }
+
+  // 2. Fallback determinístico
+  const randomTargetErrorRatio = (Math.random() * 1.2 - 0.6);
+  const targetErroTotal = tolMax * randomTargetErrorRatio;
+  const targetMedia = sheetMedia ?? (baseVal - targetErroTotal + 0.20);
+
+  const syntheticMeds = Array.from({ length: n }).map((_, idx) => {
+    if (selectedIndicesSet && !selectedIndicesSet.has(idx)) {
+      return currentMeds[idx] ?? Math.round(targetMedia * 100) / 100;
+    }
+    const dispersion = (Math.random() * 2 - 1) * (baseVal * 0.015);
+    return Math.round((targetMedia + dispersion) * 100) / 100;
+  });
+
+  return syntheticMeds;
+}
+
+
