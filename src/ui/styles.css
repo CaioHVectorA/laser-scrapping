@@ -382,3 +382,116 @@ tr:hover td {
 ::-webkit-scrollbar-thumb:hover {
   background: #3f3f46;
 }
+
+/* ─── Chart Container (Google Sheets Style) ─── */
+.chart-container-gsheets {
+  background-color: #ffffff;
+  border: 1px solid #e0e0e0;
+  border-radius: 8px;
+  overflow: hidden;
+}
+
+.chart-header-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 10px 16px;
+  background-color: #18181b;
+  border-bottom: 1px solid #27272a;
+}
+
+.chart-label {
+  font-size: 0.85rem;
+  font-weight: 600;
+  color: #f4f4f5;
+}
+
+.chart-points-badge {
+  font-size: 0.73rem;
+  color: #a1a1aa;
+  background-color: #09090b;
+  padding: 2px 8px;
+  border-radius: 4px;
+  border: 1px solid #27272a;
+}
+
+.chart-canvas-wrapper {
+  height: 280px;
+  width: 100%;
+  padding: 16px 16px 8px 16px;
+  background-color: #ffffff;
+}
+
+.chart-footer-note {
+  padding: 8px 16px;
+  font-size: 0.73rem;
+  color: #a1a1aa;
+  background-color: #18181b;
+  border-top: 1px solid #27272a;
+}
+
+/* ─── Laudo Viewer Modal ─── */
+.laudo-modal {
+  background-color: var(--bg-card);
+  border: 1px solid var(--border-muted);
+  border-radius: var(--radius);
+  width: 92%;
+  max-width: 820px;
+  max-height: 90vh;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  box-shadow: 0 24px 48px rgba(0, 0, 0, 0.85);
+}
+
+.laudo-section {
+  padding: 16px 0;
+  border-bottom: 1px solid #1e1e22;
+}
+
+.laudo-section:last-child {
+  border-bottom: none;
+}
+
+.laudo-section-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 0.78rem;
+  font-weight: 700;
+  color: #a1a1aa;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  margin-bottom: 12px;
+}
+
+.laudo-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 10px;
+}
+
+.laudo-field {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  padding: 8px 12px;
+  background-color: #0e0e11;
+  border: 1px solid #1e1e22;
+  border-radius: 6px;
+}
+
+.laudo-field label {
+  font-size: 0.68rem;
+  font-weight: 600;
+  color: #71717a;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.laudo-field span {
+  font-size: 0.87rem;
+  color: #e4e4e7;
+  font-weight: 500;
+}
+

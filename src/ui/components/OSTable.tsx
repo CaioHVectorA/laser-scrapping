@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { getOrders } from '../api.js';
-import { Search, RefreshCw, Eye, Calendar, FileText, User, Wrench } from 'lucide-react';
+import { Search, RefreshCw, Eye, Calendar, FileText, User, Wrench, ClipboardList, Building2, Hash, Clock, X } from 'lucide-react';
 
 const STATUS_OPTIONS = [
   'Todas',
@@ -18,6 +18,8 @@ export const OSTable: React.FC = () => {
   const [search, setSearch] = useState('');
   const [selectedStatus, setSelectedStatus] = useState('Todas');
   const [selectedOrder, setSelectedOrder] = useState<any | null>(null);
+  const [laudoOrder, setLaudoOrder] = useState<any | null>(null);
+  const [laudoSearch, setLaudoSearch] = useState('');
 
   const loadData = async () => {
     setLoading(true);
@@ -195,7 +197,187 @@ export const OSTable: React.FC = () => {
               )}
             </div>
             <div className="modal-footer">
+              <button className="btn btn-amber" onClick={() => { setLaudoOrder(selectedOrder); setSelectedOrder(null); }}>
+                <ClipboardList size={15} /> Ver Laudo
+              </button>
               <button className="btn btn-secondary" onClick={() => setSelectedOrder(null)}>Fechar</button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Laudo Viewer Popup */}
+      {laudoOrder && (
+        <div className="modal-overlay" onClick={() => setLaudoOrder(null)}>
+          <div className="laudo-modal" onClick={(e) => e.stopPropagation()}>
+            <div className="modal-header" style={{ borderBottom: '2px solid #E8850C' }}>
+              <h3 style={{ display: 'flex', alignItems: 'center', gap: '8px', fontSize: '1.05rem', color: '#ffffff' }}>
+                <ClipboardList size={20} color="#fbbf24" /> Visualizador de Laudo — OS #{laudoOrder.id}
+              </h3>
+              <button className="btn btn-secondary" style={{ padding: '4px 8px', fontSize: '0.75rem' }} onClick={() => setLaudoOrder(null)}>
+                <X size={14} />
+              </button>
+            </div>
+
+            <div className="modal-body" style={{ gap: '0' }}>
+              {/* 1 - CONTRATANTE */}
+              <div className="laudo-section">
+                <div className="laudo-section-header">
+                  <Building2 size={16} color="#fbbf24" />
+                  <span>1 — CONTRATANTE</span>
+                </div>
+                <div className="laudo-grid">
+                  <div className="laudo-field">
+                    <label>Nome / Razão Social</label>
+                    <span>{laudoOrder.cliente_nome || '—'}</span>
+                  </div>
+                  <div className="laudo-field">
+                    <label>CPF / CNPJ</label>
+                    <span>{laudoOrder.cliente_cpf_cnpj || '—'}</span>
+                  </div>
+                  <div className="laudo-field" style={{ gridColumn: '1 / -1' }}>
+                    <label>Endereço</label>
+                    <span>{laudoOrder.cliente_endereco || '—'}</span>
+                  </div>
+                  <div className="laudo-field">
+                    <label>Telefone(s)</label>
+                    <span>{laudoOrder.cliente_telefones || '—'}</span>
+                  </div>
+                  <div className="laudo-field">
+                    <label>E-mail</label>
+                    <span>{laudoOrder.cliente_email || '—'}</span>
+                  </div>
+                </div>
+              </div>
+
+              {/* 2 - LABORATÓRIO */}
+              <div className="laudo-section">
+                <div className="laudo-section-header">
+                  <Building2 size={16} color="#60a5fa" />
+                  <span>2 — LABORATÓRIO E TÉCNICO RESPONSÁVEL</span>
+                </div>
+                <div className="laudo-grid">
+                  <div className="laudo-field" style={{ gridColumn: '1 / -1' }}>
+                    <label>Laboratório</label>
+                    <span>MEDLASER MANUTENÇÃO DE EQUIPAMENTOS MÉDICOS E HOSPITALARES LTDA</span>
+                  </div>
+                  <div className="laudo-field">
+                    <label>CNPJ</label>
+                    <span>30.619.169/0001-95</span>
+                  </div>
+                  <div className="laudo-field">
+                    <label>Telefone</label>
+                    <span>(21) 2146-7627</span>
+                  </div>
+                  <div className="laudo-field" style={{ gridColumn: '1 / -1' }}>
+                    <label>Endereço</label>
+                    <span>Rua São Francisco Xavier 989, Loj R Loj H — São Francisco Xavier — CEP: 20550-017 — Rio de Janeiro / RJ</span>
+                  </div>
+                  <div className="laudo-field">
+                    <label>Técnico Responsável</label>
+                    <span style={{ color: '#fbbf24', fontWeight: 600 }}>
+                      {laudoOrder.tecnico_responsavel && laudoOrder.tecnico_responsavel !== 'Em aberto'
+                        ? laudoOrder.tecnico_responsavel
+                        : 'Roberto Aldilei Favoreto'}
+                    </span>
+                  </div>
+                </div>
+              </div>
+
+              {/* 5 - DETALHES DO EQUIPAMENTO */}
+              <div className="laudo-section">
+                <div className="laudo-section-header">
+                  <Wrench size={16} color="#34d399" />
+                  <span>5 — NÚMEROS DE SÉRIE E EQUIPAMENTO</span>
+                </div>
+                <div className="laudo-grid">
+                  <div className="laudo-field">
+                    <label>Equipamento</label>
+                    <span>{laudoOrder.equipamento_linha_uso || 'Laser'}</span>
+                  </div>
+                  <div className="laudo-field">
+                    <label>Modelo</label>
+                    <span style={{ color: '#10b981', fontWeight: 600 }}>{laudoOrder.equipamento_modelo || '—'}</span>
+                  </div>
+                  <div className="laudo-field">
+                    <label>Número de Série</label>
+                    <span style={{ color: '#fbbf24', fontWeight: 600, fontFamily: 'var(--font-mono)', letterSpacing: '0.05em' }}>
+                      {laudoOrder.equipamento_codigo || '—'}
+                    </span>
+                  </div>
+                  <div className="laudo-field">
+                    <label>Fabricante</label>
+                    <span>Dornier</span>
+                  </div>
+                </div>
+              </div>
+
+              {/* DATAS */}
+              <div className="laudo-section">
+                <div className="laudo-section-header">
+                  <Clock size={16} color="#c084fc" />
+                  <span>DATAS</span>
+                </div>
+                <div className="laudo-grid">
+                  <div className="laudo-field">
+                    <label>Data de Entrada</label>
+                    <span>{laudoOrder.data_entrada || '—'}</span>
+                  </div>
+                  <div className="laudo-field">
+                    <label>Data do Ensaio</label>
+                    <span>{laudoOrder.data_entrada || new Date().toLocaleDateString('pt-BR')}</span>
+                  </div>
+                </div>
+              </div>
+
+              {/* ORDEM DE SERVIÇO */}
+              <div className="laudo-section">
+                <div className="laudo-section-header">
+                  <Hash size={16} color="#f43f5e" />
+                  <span>ORDEM DE SERVIÇO</span>
+                </div>
+                <div className="laudo-grid">
+                  <div className="laudo-field">
+                    <label>Nº da OS</label>
+                    <span style={{ fontSize: '1.4rem', fontWeight: 700, color: '#ffffff', fontFamily: 'var(--font-mono)' }}>
+                      #{laudoOrder.id}
+                    </span>
+                  </div>
+                  <div className="laudo-field">
+                    <label>Situação</label>
+                    <span className={`badge-status ${getStatusBadgeClass(laudoOrder.situacao)}`}>{laudoOrder.situacao || '—'}</span>
+                  </div>
+                  <div className="laudo-field">
+                    <label>Tipo de Serviço</label>
+                    <span>{laudoOrder.servico_tipo || 'Calibração / Certificação'}</span>
+                  </div>
+                  <div className="laudo-field">
+                    <label>Valor (R$)</label>
+                    <span style={{ color: '#34d399', fontWeight: 600 }}>
+                      {laudoOrder.valor_orcamento
+                        ? `R$ ${Number(laudoOrder.valor_orcamento).toLocaleString('pt-BR', { minimumFractionDigits: 2 })}`
+                        : 'R$ 0,00'}
+                    </span>
+                  </div>
+                </div>
+              </div>
+
+              {/* Laudo Técnico */}
+              {laudoOrder.laudo_tecnico && (
+                <div className="laudo-section">
+                  <div className="laudo-section-header">
+                    <FileText size={16} color="#38bdf8" />
+                    <span>LAUDO TÉCNICO</span>
+                  </div>
+                  <div style={{ backgroundColor: '#09090b', border: '1px solid #27272a', padding: '12px', borderRadius: '6px', fontSize: '0.83rem', whiteSpace: 'pre-wrap', color: '#d4d4d8', lineHeight: '1.6' }}>
+                    {laudoOrder.laudo_tecnico}
+                  </div>
+                </div>
+              )}
+            </div>
+
+            <div className="modal-footer">
+              <button className="btn btn-secondary" onClick={() => setLaudoOrder(null)}>Fechar</button>
             </div>
           </div>
         </div>

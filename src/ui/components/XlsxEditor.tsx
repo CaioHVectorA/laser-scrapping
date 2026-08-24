@@ -1,7 +1,9 @@
 import React, { useState, useEffect, useRef } from 'react';
 import ExcelJS from 'exceljs';
 import { parseXlsx, randomizeXlsx, listXlsxFiles } from '../api.js';
-import { FileSpreadsheet, Sparkles, Undo, Redo, Save, Upload, FolderOpen, Info, ChevronDown, Layers, CheckSquare, Square, Filter } from 'lucide-react';
+import { FileSpreadsheet, Sparkles, Undo, Redo, Save, Upload, FolderOpen, Info, ChevronDown, Layers, CheckSquare, Square, Filter, BarChart3 } from 'lucide-react';
+import { MeasurementChart } from './MeasurementChart.js';
+import { applyFormulasToMatrix } from '../formulas.js';
 
 interface XlsxCellData {
   address: string;
@@ -38,7 +40,7 @@ interface HistoryState {
 }
 
 function getColLetter(colIndex: number): string {
-  let temp = '';
+  let temp: number;
   let letter = '';
   while (colIndex > 0) {
     temp = (colIndex - 1) % 26;
@@ -48,12 +50,49 @@ function getColLetter(colIndex: number): string {
   return letter;
 }
 
-function isCandidate(val: number, cellText: string): boolean {
-  if (isNaN(val) || val === null || val === undefined) return false;
-  if (Number.isInteger(val) && val > 1900 && val < 2100) return false;
-  if (Number.isInteger(val) && val > 5000 && val < 99999) return false;
-  if ([60, 115, 230, 216, 25, 80, 900].includes(val)) return false;
-  return val > 0 && val <= 200;
+function cloneParsedData(data: XlsxParsed): XlsxParsed {
+  return {
+    filePath: data.filePath,
+    fileName: data.fileName,
+    measurementCellsCount: data.measurementCellsCount,
+    sheets: data.sheets.map((sheet) => ({
+      name: sheet.name,
+      rowCount: sheet.rowCount,
+      colCount: sheet.colCount,
+      columnsWithCandidates: [...sheet.columnsWithCandidates],
+      cells: Object.fromEntries(
+        Object.entries(sheet.cells).map(([k, v]) => [k, { ...v }])
+      ),
+      matrix: sheet.matrix.map((row) =>
+        row.map((cell) => (cell ? { ...cell } : null))
+      ),
+    })),
+  };
+}
+
+/**
+ * Modifica o valor de uma célula diretamente no XML do xlsx, preservando tags de fórmula se existirem.
+ */
+function patchCellInXml(xml: string, address: string, value: number): string {
+  const escapedAddr = address.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  const cellRegex = new RegExp(
+    `(<c\\b[^>]*?\\br="${escapedAddr}"[^>]*?)(?:\\s*\\/>|\\s*>([\\s\\S]*?)<\\/c>)`,
+    ''
+  );
+  const match = xml.match(cellRegex);
+  if (!match) return xml;
+
+  let openTag = match[1];
+  const innerContent = match[2] || '';
+  // Remove atributo de tipo de string compartilhada se presente
+  openTag = openTag.replace(/\s+t="[^"]*"/g, '');
+
+  const formulaMatch = innerContent.match(/<f\b[^>]*?>[\s\S]*?<\/f>/);
+  if (formulaMatch) {
+    return xml.replace(cellRegex, `${openTag}>${formulaMatch[0]}<v>${value}</v></c>`);
+  } else {
+    return xml.replace(cellRegex, `${openTag}><v>${value}</v></c>`);
+  }
 }
 
 export const XlsxEditor: React.FC = () => {
@@ -68,9 +107,12 @@ export const XlsxEditor: React.FC = () => {
 
   const [availableFiles, setAvailableFiles] = useState<{ name: string; path: string }[]>([]);
   const [showFilePicker, setShowFilePicker] = useState(false);
+  const [showChart, setShowChart] = useState(true);
 
   const fileInputRef = useRef<HTMLInputElement>(null);
   const workbookRef = useRef<ExcelJS.Workbook | null>(null);
+  const originalBufferRef = useRef<ArrayBuffer | null>(null);
+  const initialParsedDataRef = useRef<XlsxParsed | null>(null);
 
   const [historyStack, setHistoryStack] = useState<HistoryState[]>([]);
   const [historyIndex, setHistoryIndex] = useState(-1);
@@ -112,11 +154,12 @@ export const XlsxEditor: React.FC = () => {
   };
 
   const pushHistoryState = (newState: XlsxParsed, label: string) => {
+    const cloned = cloneParsedData(newState);
     const newStack = historyStack.slice(0, historyIndex + 1);
-    newStack.push({ parsedData: newState, label });
+    newStack.push({ parsedData: cloned, label });
     setHistoryStack(newStack);
     setHistoryIndex(newStack.length - 1);
-    setParsedData(newState);
+    setParsedData(cloned);
   };
 
   // Carrega arquivo .xlsx do PC
@@ -126,16 +169,21 @@ export const XlsxEditor: React.FC = () => {
 
     try {
       const arrayBuffer = await file.arrayBuffer();
+      // Guarda buffer original para preservar gráficos na exportação
+      originalBufferRef.current = arrayBuffer.slice(0);
+
       const workbook = new ExcelJS.Workbook();
       await workbook.xlsx.load(arrayBuffer);
       workbookRef.current = workbook;
 
       const parsed = parseWorkbookStructure(workbook, file.name, file.name);
-      setParsedData(parsed);
+      const clonedInitial = cloneParsedData(parsed);
+      initialParsedDataRef.current = clonedInitial;
+      setParsedData(cloneParsedData(parsed));
       setActiveSheetIndex(0);
-      setHistoryStack([{ parsedData: parsed, label: 'Planilha Carregada' }]);
+      setHistoryStack([{ parsedData: clonedInitial, label: 'Planilha Carregada' }]);
       setHistoryIndex(0);
-      setStatusMsg(`✅ Planilha "${file.name}" carregada (${parsed.sheets.length} páginas, ${parsed.measurementCellsCount} medições identificadas).`);
+      setStatusMsg(`✅ Planilha "${file.name}" carregada (${parsed.sheets.length} páginas, ${parsed.measurementCellsCount} medições med1-medN).`);
     } catch (err: any) {
       setStatusMsg(`❌ Erro ao ler planilha do computador: ${err?.message || String(err)}`);
     }
@@ -148,10 +196,32 @@ export const XlsxEditor: React.FC = () => {
     workbook.eachSheet((worksheet) => {
       const cells: Record<string, XlsxCellData> = {};
       const maxRow = Math.max(worksheet.rowCount, 40);
-      const maxCol = Math.max(worksheet.columnCount, 12);
+      const maxCol = Math.max(worksheet.columnCount, 30);
       const matrix: (XlsxCellData | null)[][] = [];
       const colsWithCandidatesSet = new Set<string>();
 
+      // ═══ PRIMEIRA PASSAGEM: detectar colunas "medN" pelo cabeçalho ═══
+      const medColIndices = new Set<number>();
+      let headerRow = -1;
+
+      for (let scanR = 1; scanR <= Math.min(maxRow, 25); scanR++) {
+        const scanRow = worksheet.getRow(scanR);
+        for (let scanC = 1; scanC <= maxCol; scanC++) {
+          const scanCell = scanRow.getCell(scanC);
+          let cellText = '';
+          try {
+            cellText = (scanCell.text || String(scanCell.value || '')).trim();
+          } catch { cellText = ''; }
+          // Detecta med1, med2, ..., medN — mas NÃO "media"
+          if (/^med\d+$/i.test(cellText)) {
+            medColIndices.add(scanC);
+            if (headerRow === -1) headerRow = scanR;
+          }
+        }
+        if (medColIndices.size > 0) break;
+      }
+
+      // ═══ SEGUNDA PASSAGEM: parsear todas as células ═══
       for (let r = 1; r <= maxRow; r++) {
         const rowArray: (XlsxCellData | null)[] = [];
         const row = worksheet.getRow(r);
@@ -165,22 +235,39 @@ export const XlsxEditor: React.FC = () => {
           let displayValue = '';
           let formula: string | undefined = undefined;
 
-          if (rawVal && typeof rawVal === 'object') {
-            if ('formula' in rawVal) {
+          if (rawVal != null && typeof rawVal === 'object') {
+            if (rawVal instanceof Date) {
+              rawVal = rawVal.toLocaleDateString('pt-BR');
+            } else if ('formula' in rawVal) {
               formula = (rawVal as any).formula;
               rawVal = (rawVal as any).result ?? 0;
             } else if ('result' in rawVal) {
               rawVal = (rawVal as any).result;
+            } else if ('richText' in rawVal) {
+              rawVal = ((rawVal as any).richText || []).map((rt: any) => rt?.text || '').join('');
             } else if ('text' in rawVal) {
               rawVal = (rawVal as any).text;
+            } else if ('error' in rawVal) {
+              rawVal = (rawVal as any).error || '#ERR';
             }
           }
 
-          displayValue = cell.text ? String(cell.text).trim() : (rawVal !== undefined && rawVal !== null ? String(rawVal) : '');
+          try {
+            if (cell.text != null) {
+              displayValue = String(cell.text).trim();
+            } else if (rawVal != null) {
+              displayValue = String(rawVal);
+            }
+          } catch { displayValue = ''; }
+
           let numVal = typeof rawVal === 'number' ? rawVal : parseFloat(displayValue.replace(',', '.'));
           const isNum = !isNaN(numVal) && isFinite(numVal) && displayValue.trim() !== '';
 
-          const candidate = isNum && !formula ? isCandidate(numVal, displayValue) : false;
+          // SÓ marca como candidato se estiver em coluna "medN" e ABAIXO do cabeçalho
+          const candidate = isNum && !formula && medColIndices.size > 0
+            ? (medColIndices.has(c) && r > headerRow)
+            : false;
+
           if (candidate) {
             totalMeasurements++;
             colsWithCandidatesSet.add(colLetter);
@@ -204,6 +291,9 @@ export const XlsxEditor: React.FC = () => {
         }
         matrix.push(rowArray);
       }
+
+      // Aplica o recálculo automático de todas as fórmulas associadas às medições
+      applyFormulasToMatrix(matrix, worksheet);
 
       sheets.push({
         name: worksheet.name,
@@ -298,11 +388,13 @@ export const XlsxEditor: React.FC = () => {
 
     try {
       if (workbookRef.current) {
-        const activeSheetName = parsedData.sheets[activeSheetIndex]?.name;
-        const worksheet = workbookRef.current.getWorksheet(activeSheetName);
+        // Clona para garantir imutabilidade do histórico
+        const nextParsed = cloneParsedData(parsedData);
+        const activeSheet = nextParsed.sheets[activeSheetIndex];
+        const worksheet = workbookRef.current.getWorksheet(activeSheet?.name);
 
-        if (worksheet) {
-          parsedData.sheets[activeSheetIndex].matrix.forEach((row) => {
+        if (activeSheet) {
+          activeSheet.matrix.forEach((row) => {
             row.forEach((cellData) => {
               if (!cellData) return;
               const isColSelected = selectedColumns.has(cellData.colLetter);
@@ -315,17 +407,25 @@ export const XlsxEditor: React.FC = () => {
                 let newVal = val + delta;
                 newVal = Math.round(newVal * 100) / 100; // Arredonda estritamente para 2 casas decimais
 
-                const excelCell = worksheet.getRow(cellData.row).getCell(cellData.col);
-                excelCell.value = newVal;
+                cellData.value = newVal;
+                cellData.displayValue = String(newVal).replace('.', ',');
+
+                if (worksheet) {
+                  try {
+                    worksheet.getRow(cellData.row).getCell(cellData.col).value = newVal;
+                  } catch {}
+                }
                 alteredCount++;
               }
             });
           });
+
+          // Aplica recálculo de fórmulas nas colunas dependentes (media, ERRO TOTAL, desvPadrao, incerteza, k, confianca, tendencia)
+          applyFormulasToMatrix(activeSheet.matrix, worksheet);
         }
 
-        const updatedParsed = parseWorkbookStructure(workbookRef.current, parsedData.fileName, parsedData.filePath);
-        pushHistoryState(updatedParsed, `Variação ±${maxPercent}% (${alteredCount} células)`);
-        setStatusMsg(`✨ ${alteredCount} medições alteradas estritamente em até ±${maxPercent}%. Exemplo: 1.20 ➔ ${(1.20 * (1 + (maxPercent/100))).toFixed(2)} máx.`);
+        pushHistoryState(nextParsed, `Variação ±${maxPercent}% (${alteredCount} células)`);
+        setStatusMsg(`✨ ${alteredCount} medições variadas (±${maxPercent}%). Fórmulas recalculadas: Média, ERRO TOTAL, DesvPadrão, Incerteza, Fator k, Confiança e Tendência.`);
       } else {
         // Fallback para arquivo do servidor
         const tempOutput = parsedData.filePath.replace(/\.xlsx$/i, '_temp_variado.xlsx');
@@ -346,6 +446,91 @@ export const XlsxEditor: React.FC = () => {
     }
   };
 
+  /**
+   * Exporta preservando gráficos: usa JSZip para modificar apenas os valores
+   * das células no XML original, sem reescrever o arquivo inteiro.
+   */
+  const exportWithChartPreservation = async (): Promise<ArrayBuffer> => {
+    // @ts-ignore — jszip vem como dependência do exceljs
+    const JSZip = (await import('jszip')).default || (await import('jszip'));
+    const originalBuffer = originalBufferRef.current!;
+
+    // Compara estado atual com estado inicial imutável para encontrar TODAS as células alteradas
+    const originalParsed = initialParsedDataRef.current || historyStack[0]?.parsedData;
+    const currentParsed = parsedData!;
+    const changesBySheet = new Map<number, { address: string; newValue: number }[]>();
+
+    let totalChangesCount = 0;
+
+    for (let s = 0; s < currentParsed.sheets.length; s++) {
+      const origSheet = originalParsed?.sheets[s];
+      const currSheet = currentParsed.sheets[s];
+      if (!currSheet) continue;
+      const changes: { address: string; newValue: number }[] = [];
+
+      for (let r = 0; r < currSheet.matrix.length; r++) {
+        for (let c = 0; c < (currSheet.matrix[r]?.length || 0); c++) {
+          const origCell = origSheet?.matrix[r]?.[c];
+          const currCell = currSheet.matrix[r]?.[c];
+          if (currCell && typeof currCell.value === 'number') {
+            const origVal = origCell ? origCell.value : null;
+            // Detecta se o valor numérico mudou
+            if (origVal === null || origVal === undefined || Math.abs(currCell.value - Number(origVal)) > 0.0000001) {
+              changes.push({ address: currCell.address, newValue: currCell.value });
+              totalChangesCount++;
+            }
+          }
+        }
+      }
+      if (changes.length > 0) changesBySheet.set(s, changes);
+    }
+
+    console.log(`[Export] Total de células modificadas a serem gravadas no XML: ${totalChangesCount}`);
+
+    // Abre o zip original e aplica patches nas células modificadas
+    const zip = new JSZip();
+    await zip.loadAsync(originalBuffer);
+
+    // Mapeamento de índice de planilha para caminho do arquivo XML no zip
+    const sheetPaths: string[] = [];
+    try {
+      const wbXml = await zip.file('xl/workbook.xml')?.async('string');
+      const wbRelsXml = await zip.file('xl/_rels/workbook.xml.rels')?.async('string');
+      if (wbXml && wbRelsXml) {
+        const sheetMatches = [...wbXml.matchAll(/<sheet\s[^>]*?r:id="([^"]+)"[^>]*?>/g)];
+        for (const match of sheetMatches) {
+          const rId = match[1];
+          const relMatch = wbRelsXml.match(new RegExp(`<Relationship\\s[^>]*?Id="${rId}"[^>]*?Target="([^"]+)"`));
+          if (relMatch) {
+            let target = relMatch[1];
+            if (!target.startsWith('xl/')) {
+              target = 'xl/' + target.replace(/^\//, '');
+            }
+            sheetPaths.push(target);
+          }
+        }
+      }
+    } catch {}
+
+    for (const [sheetIdx, changes] of changesBySheet) {
+      const sheetPath = sheetPaths[sheetIdx] || `xl/worksheets/sheet${sheetIdx + 1}.xml`;
+      let sheetFile = zip.file(sheetPath);
+      if (!sheetFile) {
+        const fallbackKey = Object.keys(zip.files).find(k => k.endsWith(`sheet${sheetIdx + 1}.xml`));
+        if (fallbackKey) sheetFile = zip.file(fallbackKey);
+      }
+      if (!sheetFile) continue;
+
+      let xml = await sheetFile.async('string');
+      for (const change of changes) {
+        xml = patchCellInXml(xml, change.address, change.newValue);
+      }
+      zip.file(sheetFile.name, xml);
+    }
+
+    return zip.generateAsync({ type: 'arraybuffer' });
+  };
+
   // Exporta a planilha modificada para download
   const handleExportFile = async () => {
     if (!parsedData) return;
@@ -354,7 +539,11 @@ export const XlsxEditor: React.FC = () => {
     try {
       let buffer: Uint8Array | ArrayBuffer;
 
-      if (workbookRef.current) {
+      if (originalBufferRef.current && historyStack.length > 0) {
+        // Exportação com preservação de gráficos via JSZip
+        buffer = await exportWithChartPreservation();
+      } else if (workbookRef.current) {
+        // Fallback sem buffer original
         buffer = await workbookRef.current.xlsx.writeBuffer();
       } else {
         const res = await fetch(`http://localhost:3001/api/xlsx/parse`, {
@@ -376,7 +565,7 @@ export const XlsxEditor: React.FC = () => {
       document.body.removeChild(a);
       URL.revokeObjectURL(url);
 
-      setStatusMsg(`🎉 Planilha "modificado_${parsedData.fileName}" baixada com SUCESSO! Ao reabrir no Google Sheets, os gráficos existentes atualizarão automaticamente.`);
+      setStatusMsg(`🎉 Planilha "modificado_${parsedData.fileName}" exportada com gráficos preservados!`);
     } catch (err: any) {
       setStatusMsg(`❌ Erro ao exportar: ${err?.message || String(err)}`);
     }
@@ -385,8 +574,28 @@ export const XlsxEditor: React.FC = () => {
   const handleUndo = () => {
     if (historyIndex > 0) {
       const prevIdx = historyIndex - 1;
+      const targetState = cloneParsedData(historyStack[prevIdx].parsedData);
       setHistoryIndex(prevIdx);
-      setParsedData(historyStack[prevIdx].parsedData);
+      setParsedData(targetState);
+
+      // Sincroniza o workbook em memória
+      if (workbookRef.current) {
+        targetState.sheets.forEach((sheet) => {
+          const ws = workbookRef.current?.getWorksheet(sheet.name);
+          if (ws) {
+            sheet.matrix.forEach((row) => {
+              row.forEach((cell) => {
+                if (cell && typeof cell.value === 'number') {
+                  try {
+                    ws.getRow(cell.row).getCell(cell.col).value = cell.value;
+                  } catch {}
+                }
+              });
+            });
+          }
+        });
+      }
+
       setStatusMsg(`↩ Desfeito para: "${historyStack[prevIdx].label}"`);
     }
   };
@@ -394,8 +603,28 @@ export const XlsxEditor: React.FC = () => {
   const handleRedo = () => {
     if (historyIndex < historyStack.length - 1) {
       const nextIdx = historyIndex + 1;
+      const targetState = cloneParsedData(historyStack[nextIdx].parsedData);
       setHistoryIndex(nextIdx);
-      setParsedData(historyStack[nextIdx].parsedData);
+      setParsedData(targetState);
+
+      // Sincroniza o workbook em memória
+      if (workbookRef.current) {
+        targetState.sheets.forEach((sheet) => {
+          const ws = workbookRef.current?.getWorksheet(sheet.name);
+          if (ws) {
+            sheet.matrix.forEach((row) => {
+              row.forEach((cell) => {
+                if (cell && typeof cell.value === 'number') {
+                  try {
+                    ws.getRow(cell.row).getCell(cell.col).value = cell.value;
+                  } catch {}
+                }
+              });
+            });
+          }
+        });
+      }
+
       setStatusMsg(`↪ Refeito para: "${historyStack[nextIdx].label}"`);
     }
   };
@@ -474,6 +703,10 @@ export const XlsxEditor: React.FC = () => {
                 <Redo size={15} /> Refazer
               </button>
             </div>
+
+            <button className="btn btn-secondary" onClick={() => setShowChart(!showChart)} title="Mostrar/ocultar gráfico">
+              <BarChart3 size={16} /> {showChart ? 'Ocultar' : 'Ver'} Gráfico
+            </button>
 
             <button className="btn btn-primary" style={{ backgroundColor: '#10b981', color: '#ffffff' }} onClick={handleExportFile}>
               <Save size={16} /> Exportar XLSX
@@ -615,6 +848,16 @@ export const XlsxEditor: React.FC = () => {
               </div>
             )}
           </div>
+
+          {/* Chart Preview */}
+          {showChart && activeSheet && (
+            <div style={{ padding: '12px', borderTop: '1px solid #27272a' }}>
+              <MeasurementChart
+                sheetData={activeSheet}
+                frequencyLabel={activeSheet.name}
+              />
+            </div>
+          )}
 
           {/* Bottom Sheet Tabs Bar (Google Sheets Style) */}
           <div className="sheets-tabs-bar">

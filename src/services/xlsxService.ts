@@ -1,6 +1,7 @@
 import ExcelJS from 'exceljs';
 import fs from 'node:fs';
 import path from 'node:path';
+import { applyFormulasToMatrix } from '../ui/formulas.js';
 
 export interface XlsxCellData {
   address: string;
@@ -39,7 +40,7 @@ export interface CellChange {
 }
 
 function getColLetter(colIndex: number): string {
-  let temp = '';
+  let temp: number;
   let letter = '';
   while (colIndex > 0) {
     temp = (colIndex - 1) % 26;
@@ -47,23 +48,6 @@ function getColLetter(colIndex: number): string {
     colIndex = Math.floor((colIndex - temp - 1) / 26);
   }
   return letter;
-}
-
-/**
- * Verifica se um valor numérico é candidato a ser uma medição de ensaio
- */
-function isMeasurementCandidate(val: number, cellText: string, rowIdx: number): boolean {
-  if (isNaN(val) || val === null || val === undefined) return false;
-
-  // Ignora anos e IDs de OS se forem inteiros grandes
-  if (Number.isInteger(val) && val > 1900 && val < 2100) return false;
-  if (Number.isInteger(val) && val > 5000 && val < 99999) return false;
-
-  // Ignora constantes padrão
-  if ([60, 115, 230, 216, 25, 80, 900].includes(val)) return false;
-
-  // Valores de energia e potência típicos de ensaio
-  return val > 0 && val <= 200;
 }
 
 /**
@@ -84,10 +68,32 @@ export async function parseXlsx(filePath: string): Promise<XlsxParsedData> {
   workbook.eachSheet((worksheet) => {
     const cells: Record<string, XlsxCellData> = {};
     const maxRow = Math.max(worksheet.rowCount, 40);
-    const maxCol = Math.max(worksheet.columnCount, 12);
+    const maxCol = Math.max(worksheet.columnCount, 30);
     const matrix: (XlsxCellData | null)[][] = [];
     const colsWithCandidatesSet = new Set<string>();
 
+    // ═══ PRIMEIRA PASSAGEM: detectar colunas "medN" pelo cabeçalho ═══
+    const medColIndices = new Set<number>();
+    let headerRow = -1;
+
+    for (let scanR = 1; scanR <= Math.min(maxRow, 25); scanR++) {
+      const scanRow = worksheet.getRow(scanR);
+      for (let scanC = 1; scanC <= maxCol; scanC++) {
+        const scanCell = scanRow.getCell(scanC);
+        let cellText = '';
+        try {
+          cellText = (scanCell.text || String(scanCell.value || '')).trim();
+        } catch { cellText = ''; }
+        // Detecta med1, med2, ..., medN — mas NÃO "media"
+        if (/^med\d+$/i.test(cellText)) {
+          medColIndices.add(scanC);
+          if (headerRow === -1) headerRow = scanR;
+        }
+      }
+      if (medColIndices.size > 0) break;
+    }
+
+    // ═══ SEGUNDA PASSAGEM: parsear todas as células ═══
     for (let r = 1; r <= maxRow; r++) {
       const rowArray: (XlsxCellData | null)[] = [];
       const row = worksheet.getRow(r);
@@ -101,23 +107,39 @@ export async function parseXlsx(filePath: string): Promise<XlsxParsedData> {
         let displayVal = '';
         let formula: string | undefined = undefined;
 
-        if (rawVal && typeof rawVal === 'object') {
-          if ('formula' in rawVal) {
+        if (rawVal != null && typeof rawVal === 'object') {
+          if (rawVal instanceof Date) {
+            rawVal = rawVal.toLocaleDateString('pt-BR');
+          } else if ('formula' in rawVal) {
             formula = (rawVal as any).formula;
             rawVal = (rawVal as any).result ?? 0;
           } else if ('result' in rawVal) {
             rawVal = (rawVal as any).result;
+          } else if ('richText' in rawVal) {
+            rawVal = ((rawVal as any).richText || []).map((rt: any) => rt?.text || '').join('');
           } else if ('text' in rawVal) {
             rawVal = (rawVal as any).text;
+          } else if ('error' in rawVal) {
+            rawVal = (rawVal as any).error || '#ERR';
           }
         }
 
-        displayVal = cell.text ? String(cell.text).trim() : (rawVal !== undefined && rawVal !== null ? String(rawVal) : '');
+        try {
+          if (cell.text != null) {
+            displayVal = String(cell.text).trim();
+          } else if (rawVal != null) {
+            displayVal = String(rawVal);
+          }
+        } catch { displayVal = ''; }
         
         let numVal = typeof rawVal === 'number' ? rawVal : parseFloat(displayVal.replace(',', '.'));
         const isNum = !isNaN(numVal) && isFinite(numVal) && displayVal.trim() !== '';
 
-        const candidate = isNum && !formula ? isMeasurementCandidate(numVal, displayVal, r) : false;
+        // SÓ marca como candidato se estiver em coluna "medN" e ABAIXO do cabeçalho
+        const candidate = isNum && !formula && medColIndices.size > 0
+          ? (medColIndices.has(c) && r > headerRow)
+          : false;
+
         if (candidate) {
           totalMeasurements++;
           colsWithCandidatesSet.add(colLetter);
@@ -142,6 +164,9 @@ export async function parseXlsx(filePath: string): Promise<XlsxParsedData> {
 
       matrix.push(rowArray);
     }
+
+    // Aplica as fórmulas da planilha no servidor
+    applyFormulasToMatrix(matrix, worksheet);
 
     sheets.push({
       name: worksheet.name,
