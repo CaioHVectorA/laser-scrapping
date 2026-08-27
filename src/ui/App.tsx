@@ -1,14 +1,15 @@
 import React, { useState } from 'react';
 import { OSTable } from './components/OSTable.js';
 import { ScraperPanel } from './components/ScraperPanel.js';
+import { OperationPanel } from './components/OperationPanel.js';
 import { XlsxEditor } from './components/XlsxEditor.js';
-import { Table, Play, FileSpreadsheet, Zap } from 'lucide-react';
+import { Table, Play, FileSpreadsheet, Zap, Sliders } from 'lucide-react';
 import './styles.css';
 
-type TabType = 'orders' | 'scraper' | 'xlsx';
+type TabType = 'orders' | 'scraper' | 'operation' | 'xlsx';
 
 export const App: React.FC = () => {
-  const [activeTab, setActiveTab] = useState<TabType>('orders');
+  const [activeTab, setActiveTab] = useState<TabType>('operation');
 
   return (
     <div id="root">
@@ -34,6 +35,12 @@ export const App: React.FC = () => {
             <Play size={16} /> Automação
           </button>
           <button
+            className={`tab-btn ${activeTab === 'operation' ? 'active' : ''}`}
+            onClick={() => setActiveTab('operation')}
+          >
+            <Sliders size={16} /> Operação
+          </button>
+          <button
             className={`tab-btn ${activeTab === 'xlsx' ? 'active' : ''}`}
             onClick={() => setActiveTab('xlsx')}
           >
@@ -46,8 +53,10 @@ export const App: React.FC = () => {
       <main className="app-content">
         {activeTab === 'orders' && <OSTable />}
         {activeTab === 'scraper' && <ScraperPanel />}
+        {activeTab === 'operation' && <OperationPanel />}
         {activeTab === 'xlsx' && <XlsxEditor />}
       </main>
     </div>
   );
 };
+
