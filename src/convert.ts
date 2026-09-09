@@ -477,16 +477,30 @@ async function main() {
     process.exit(1);
   }
 
-  const packageName = 'bun:sqlite';
-  const sqliteModule = await import(packageName);
-  const Database = sqliteModule.Database;
+  let record: DbRecord | undefined;
+  let dbClose: (() => void) | undefined;
 
-  const db = new Database(dbPath);
-  const record = db.query('SELECT * FROM ordens_servico WHERE id = ?').get(targetOsId) as DbRecord | undefined;
+  if (typeof (globalThis as any).Bun !== 'undefined' || (process as any).versions?.bun) {
+    try {
+      const packageName = 'bun:sqlite';
+      const sqliteModule = await import(packageName);
+      const db = new sqliteModule.Database(dbPath);
+      record = db.query('SELECT * FROM ordens_servico WHERE id = ?').get(targetOsId) as DbRecord | undefined;
+      dbClose = () => db.close();
+    } catch {}
+  }
+
+  if (!dbClose) {
+    const sqliteModule = await import('node:sqlite');
+    const db = new sqliteModule.DatabaseSync(dbPath);
+    const stmt = db.prepare('SELECT * FROM ordens_servico WHERE id = ?');
+    record = stmt.get(targetOsId) as DbRecord | undefined;
+    dbClose = () => db.close();
+  }
 
   if (!record) {
     console.warn(`⚠️ Nenhuma Ordem de Serviço encontrada no banco para a OS: #${targetOsId}`);
-    db.close();
+    if (dbClose) dbClose();
     process.exit(1);
   }
 
@@ -510,7 +524,7 @@ async function main() {
   console.log(`💾 Salvo em: ${outputPath}`);
   console.log('----------------------------------------------------');
 
-  db.close();
+  if (dbClose) dbClose();
 }
 
 main();

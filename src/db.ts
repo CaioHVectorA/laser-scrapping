@@ -2,46 +2,43 @@ import fs from 'node:fs';
 import path from 'node:path';
 import type { ScrapedItem } from './types/index.js';
 
-declare const Bun: any;
-let DatabaseClass: any = null;
-
-/**
- * Obtém dinamicamente a classe Database do bun:sqlite somente quando executado dentro do Bun.
- */
-async function getDatabaseClass() {
-  if (!DatabaseClass) {
-    if (typeof Bun !== 'undefined' || (process as any).versions?.bun) {
-      const packageName = 'bun:sqlite';
-      const module = await import(packageName);
-      DatabaseClass = module.Database;
-    } else {
-      throw new Error(
-        '⚠️ O suporte a SQLite neste projeto utiliza o driver nativo "bun:sqlite", que requer a runtime Bun.\n' +
-        '👉 Para rodar com o navegador visível usando Bun, execute no terminal:\n' +
-        '   HEADLESS=false bun src/index.ts\n' +
-        '   ou\n' +
-        '   npm run start:headed'
-      );
-    }
-  }
-  return DatabaseClass;
-}
-
-/**
- * Salva ou atualiza (UPSERT) uma lista de Ordens de Serviço no banco de dados SQLite usando bun:sqlite.
- */
-export async function saveToDatabase(items: ScrapedItem[], dbPath: string): Promise<number> {
-  const DB = await getDatabaseClass();
-
+async function getDatabaseConnection(dbPath: string) {
   const dir = path.dirname(dbPath);
   if (!fs.existsSync(dir)) {
     fs.mkdirSync(dir, { recursive: true });
   }
 
-  const db = new DB(dbPath);
+  // Tenta bun:sqlite primeiro em runtime Bun
+  if (typeof (globalThis as any).Bun !== 'undefined' || (process as any).versions?.bun) {
+    try {
+      const packageName = 'bun:sqlite';
+      const sqliteModule = await import(packageName);
+      const db = new sqliteModule.Database(dbPath);
+      db.exec('PRAGMA journal_mode = WAL;');
+      return db;
+    } catch {
+      // Fallback para node:sqlite
+    }
+  }
 
-  // Ativa modo WAL para melhor performance
-  db.exec('PRAGMA journal_mode = WAL;');
+  // Fallback para node:sqlite em Node 22/24+
+  try {
+    const sqliteModule = await import('node:sqlite');
+    const db = new sqliteModule.DatabaseSync(dbPath);
+    db.exec('PRAGMA journal_mode = WAL;');
+    return db;
+  } catch (err) {
+    console.error('❌ Falha ao carregar driver SQLite (bun:sqlite ou node:sqlite):', err);
+    throw err;
+  }
+}
+
+/**
+ * Salva ou atualiza (UPSERT) uma lista de Ordens de Serviço no banco de dados SQLite.
+ * Suporta bun:sqlite (Bun) e node:sqlite (Node 22/24+).
+ */
+export async function saveToDatabase(items: ScrapedItem[], dbPath: string): Promise<number> {
+  const db = await getDatabaseConnection(dbPath);
 
   db.exec(`
     CREATE TABLE IF NOT EXISTS ordens_servico (
@@ -69,15 +66,15 @@ export async function saveToDatabase(items: ScrapedItem[], dbPath: string): Prom
     );
   `);
 
-  const insertStmt = db.prepare(`
+  const sql = `
     INSERT INTO ordens_servico (
       id, situacao, data_entrada, cliente_nome, cliente_cpf_cnpj, cliente_endereco, cliente_telefones, cliente_email,
       equipamento_modelo, equipamento_codigo, equipamento_linha_uso, equipamento_dimensoes, equipamento_descricao, equipamento_acessorios,
       servico_tipo, tecnico_responsavel, descricao_problema, valor_orcamento, observacoes, laudo_tecnico, scraped_at
     ) VALUES (
-      $id, $situacao, $data_entrada, $cliente_nome, $cliente_cpf_cnpj, $cliente_endereco, $cliente_telefones, $cliente_email,
-      $equipamento_modelo, $equipamento_codigo, $equipamento_linha_uso, $equipamento_dimensoes, $equipamento_descricao, $equipamento_acessorios,
-      $servico_tipo, $tecnico_responsavel, $descricao_problema, $valor_orcamento, $observacoes, $laudo_tecnico, $scraped_at
+      ?, ?, ?, ?, ?, ?, ?, ?,
+      ?, ?, ?, ?, ?, ?,
+      ?, ?, ?, ?, ?, ?, ?
     ) ON CONFLICT(id) DO UPDATE SET
       situacao = excluded.situacao,
       data_entrada = excluded.data_entrada,
@@ -99,39 +96,51 @@ export async function saveToDatabase(items: ScrapedItem[], dbPath: string): Prom
       observacoes = excluded.observacoes,
       laudo_tecnico = excluded.laudo_tecnico,
       scraped_at = excluded.scraped_at;
-  `);
+  `;
 
+  const insertStmt = db.prepare(sql);
   let count = 0;
 
-  db.transaction(() => {
+  db.exec('BEGIN TRANSACTION;');
+  try {
     for (const item of items) {
-      insertStmt.run({
-        $id: item.id,
-        $situacao: item.situacao || '',
-        $data_entrada: item.dataEntrada || '',
-        $cliente_nome: item.clienteNome || '',
-        $cliente_cpf_cnpj: item.clienteCpfCnpj || '',
-        $cliente_endereco: item.clienteEndereco || '',
-        $cliente_telefones: item.clienteTelefones || '',
-        $cliente_email: item.clienteEmail || '',
-        $equipamento_modelo: item.equipamentoModelo || '',
-        $equipamento_codigo: item.equipamentoCodigo || '',
-        $equipamento_linha_uso: item.equipamentoLinhaUso || '',
-        $equipamento_dimensoes: item.equipamentoDimensoes || '',
-        $equipamento_descricao: item.equipamentoDescricao || '',
-        $equipamento_acessorios: item.equipamentoAcessorios || '',
-        $servico_tipo: item.servicoTipo || '',
-        $tecnico_responsavel: item.tecnicoResp || '',
-        $descricao_problema: item.descricaoProblema || '',
-        $valor_orcamento: typeof item.valorOrcamento === 'number' ? item.valorOrcamento : parseFloat(String(item.valorOrcamento).replace(',', '.')) || 0,
-        $observacoes: item.observacoes || '',
-        $laudo_tecnico: item.laudoTecnico || '',
-        $scraped_at: item.scrapedAt || new Date().toLocaleString('pt-BR')
-      });
+      const val = [
+        item.id,
+        item.situacao || '',
+        item.dataEntrada || '',
+        item.clienteNome || '',
+        item.clienteCpfCnpj || '',
+        item.clienteEndereco || '',
+        item.clienteTelefones || '',
+        item.clienteEmail || '',
+        item.equipamentoModelo || '',
+        item.equipamentoCodigo || '',
+        item.equipamentoLinhaUso || '',
+        item.equipamentoDimensoes || '',
+        item.equipamentoDescricao || '',
+        item.equipamentoAcessorios || '',
+        item.servicoTipo || '',
+        item.tecnicoResp || '',
+        item.descricaoProblema || '',
+        typeof item.valorOrcamento === 'number' ? item.valorOrcamento : parseFloat(String(item.valorOrcamento).replace(',', '.')) || 0,
+        item.observacoes || '',
+        item.laudoTecnico || '',
+        item.scrapedAt || new Date().toLocaleString('pt-BR')
+      ];
+
+      insertStmt.run(...val);
       count++;
     }
-  })();
+    db.exec('COMMIT;');
+  } catch (err) {
+    db.exec('ROLLBACK;');
+    throw err;
+  }
 
-  db.close();
+  if (typeof db.close === 'function') {
+    db.close();
+  }
+
   return count;
 }
+

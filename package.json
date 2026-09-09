@@ -5,9 +5,10 @@
   "main": "dist/electron/main.js",
   "type": "module",
   "scripts": {
-    "start": "bun src/index.ts",
-    "start:headed": "HEADLESS=false bun src/index.ts",
-    "convert": "bun src/convert.ts",
+    "start": "tsx src/index.ts",
+    "start:headed": "cross-env HEADLESS=false tsx src/index.ts",
+    "start:bun": "bun src/index.ts",
+    "convert": "tsx src/convert.ts",
     "dev:web": "concurrently \"bun src/server.ts\" \"vite\"",
     "dev:renderer": "vite",
     "build:renderer": "vite build",
