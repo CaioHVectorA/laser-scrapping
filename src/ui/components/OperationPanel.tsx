@@ -7,10 +7,8 @@ import {
   Zap,
   CheckCircle2,
   RefreshCw,
-  Save,
   Clock,
   LayoutTemplate,
-  ChevronDown,
   Sparkles,
   Info,
   Building2,
@@ -18,19 +16,31 @@ import {
   Hash,
   Calendar,
   FileText,
-  Trash2,
-  Plus,
-  ArrowRight,
-  FolderOpen,
-  Activity
+  CheckSquare,
+  Square,
+  Filter,
+  BarChart3,
+  SlidersHorizontal,
+  Waves,
+  Printer,
+  Settings2,
+  FolderOpen
 } from 'lucide-react';
 
 import { parseXlsx, listXlsxFiles, randomizeXlsx } from '../api.js';
 import { XlsxParsed, XlsxSheet, XlsxCellData } from '../types.js';
-import { applyFormulasToMatrix, generateValidRowMeasurements, detectRowColumnMap } from '../formulas.js';
+import {
+  applyFormulasToMatrix,
+  generateValidRowMeasurements,
+  detectRowColumnMap,
+  VariationMode,
+  DEFAULT_MEDLASER_PRESET,
+  CustomLayoutPreset
+} from '../formulas.js';
 import { DbOrder, applyOsSubstitutions, SubstitutionDiffItem, formatDateExtenso } from '../osSubstitution.js';
-import { getRecentFiles, saveRecentFile, removeRecentFile, getTemplates, saveTemplate, removeTemplate, RecentItem, TemplateItem } from '../storage.js';
+import { getRecentFiles, saveRecentFile, getTemplates, saveTemplate, RecentItem, TemplateItem } from '../storage.js';
 import { MeasurementChart } from './MeasurementChart.js';
+import { ReportDocumentView } from './ReportDocumentView.js';
 
 function getColLetter(colIndex: number): string {
   let temp: number;
@@ -76,17 +86,20 @@ export const OperationPanel: React.FC = () => {
   const [activeSheetIndex, setActiveSheetIndex] = useState(1);
   const [maxPercent, setMaxPercent] = useState(10);
   const [statusMsg, setStatusMsg] = useState('');
-  const [isDragging, setIsDragging] = useState(false);
   const [substitutionDiffs, setSubstitutionDiffs] = useState<SubstitutionDiffItem[]>([]);
   const [isOsSubstituted, setIsOsSubstituted] = useState(false);
 
-  // ── Storage State (Recents & Templates) ──
+  // ── Customizable Selection & Curve Variation State ──
+  const [selectedSheetsForVariation, setSelectedSheetsForVariation] = useState<Set<string>>(new Set());
+  const [selectedColumnsForVariation, setSelectedColumnsForVariation] = useState<Set<string>>(new Set());
+  const [variationMode, setVariationMode] = useState<VariationMode>('wobble');
+  const [activeViewTab, setActiveViewTab] = useState<'editor' | 'report_pdf' | 'preset_config'>('editor');
+  const [customPreset, setCustomPreset] = useState<CustomLayoutPreset>(DEFAULT_MEDLASER_PRESET);
+  const [showPresetModal, setShowPresetModal] = useState(false);
+
+  // ── Storage State ──
   const [recents, setRecents] = useState<RecentItem[]>([]);
   const [templates, setTemplates] = useState<TemplateItem[]>([]);
-  const [showRecentsModal, setShowRecentsModal] = useState(false);
-  const [showTemplatesModal, setShowTemplatesModal] = useState(false);
-  const [newTemplateName, setNewTemplateName] = useState('');
-  const [newTemplateDesc, setNewTemplateDesc] = useState('');
   const [availableServerFiles, setAvailableServerFiles] = useState<{ name: string; path: string }[]>([]);
 
   // ── Refs ──
@@ -102,6 +115,27 @@ export const OperationPanel: React.FC = () => {
     setTemplates(getTemplates());
     loadServerFiles();
   }, []);
+
+  // Sync available sheet checkboxes & column checkboxes when spreadsheet loads
+  useEffect(() => {
+    if (parsedData?.sheets) {
+      // By default select all sheets containing measurement columns (except Sheet 0 which is the report/certificate)
+      const freqSheets = parsedData.sheets
+        .filter((_, idx) => idx > 0 || parsedData.sheets.length === 1)
+        .map(s => s.name);
+      setSelectedSheetsForVariation(new Set(freqSheets));
+
+      // Collect all candidate columns
+      const allCandidateCols = new Set<string>();
+      parsedData.sheets.forEach(s => {
+        (s.columnsWithCandidates || []).forEach(c => allCandidateCols.add(c));
+      });
+      if (allCandidateCols.size === 0) {
+        ['F', 'G', 'H', 'I', 'J'].forEach(c => allCandidateCols.add(c));
+      }
+      setSelectedColumnsForVariation(allCandidateCols);
+    }
+  }, [parsedData]);
 
   const loadServerFiles = async () => {
     try {
@@ -139,6 +173,16 @@ export const OperationPanel: React.FC = () => {
     setIsOsSubstituted(false);
     setSubstitutionDiffs([]);
     setStatusMsg(`✅ Ordem de Serviço #${os.id} selecionada (${os.cliente_nome || 'Cliente'}).`);
+
+    // Auto-apply OS substitutions if spreadsheet is loaded
+    if (parsedData) {
+      try {
+        const res = applyOsSubstitutions(parsedData, os, workbookRef.current);
+        setParsedData(res.updatedParsedData);
+        setSubstitutionDiffs(res.diffs);
+        setIsOsSubstituted(true);
+      } catch {}
+    }
   };
 
   // ── File Upload Handler ──
@@ -160,7 +204,15 @@ export const OperationPanel: React.FC = () => {
       setIsOsSubstituted(false);
       setSubstitutionDiffs([]);
 
-      // Salva em Recentes
+      if (selectedOs) {
+        try {
+          const res = applyOsSubstitutions(clonedInitial, selectedOs, workbook);
+          setParsedData(res.updatedParsedData);
+          setSubstitutionDiffs(res.diffs);
+          setIsOsSubstituted(true);
+        } catch {}
+      }
+
       const updatedRecents = saveRecentFile({
         fileName: file.name,
         osId: selectedOs?.id,
@@ -182,6 +234,15 @@ export const OperationPanel: React.FC = () => {
       setParsedData(res);
       setIsOsSubstituted(false);
       setSubstitutionDiffs([]);
+
+      if (selectedOs) {
+        try {
+          const subRes = applyOsSubstitutions(res, selectedOs, workbookRef.current);
+          setParsedData(subRes.updatedParsedData);
+          setSubstitutionDiffs(subRes.diffs);
+          setIsOsSubstituted(true);
+        } catch {}
+      }
 
       const updatedRecents = saveRecentFile({
         fileName: res.fileName,
@@ -208,7 +269,6 @@ export const OperationPanel: React.FC = () => {
       const matrix: (XlsxCellData | null)[][] = [];
       const colsWithCandidatesSet = new Set<string>();
 
-      // Primeira passagem: detectar colunas medN
       const medColIndices = new Set<number>();
       let headerRow = -1;
 
@@ -226,7 +286,6 @@ export const OperationPanel: React.FC = () => {
         if (medColIndices.size > 0) break;
       }
 
-      // Segunda passagem: parsear células
       for (let r = 1; r <= maxRow; r++) {
         const rowArray: (XlsxCellData | null)[] = [];
         const row = worksheet.getRow(r);
@@ -313,6 +372,141 @@ export const OperationPanel: React.FC = () => {
     };
   };
 
+  // ── Sheet & Column Checkbox Helpers ──
+  const toggleSheetForVariation = (sheetName: string) => {
+    const next = new Set(selectedSheetsForVariation);
+    if (next.has(sheetName)) next.delete(sheetName);
+    else next.add(sheetName);
+    setSelectedSheetsForVariation(next);
+  };
+
+  const toggleColumnForVariation = (colLetter: string) => {
+    const next = new Set(selectedColumnsForVariation);
+    if (next.has(colLetter)) next.delete(colLetter);
+    else next.add(colLetter);
+    setSelectedColumnsForVariation(next);
+  };
+
+  // ── Action: Custom Randomize Selected Sheets & Columns ──
+  const handleRandomizeSelectedSheets = () => {
+    if (!parsedData) return;
+    if (selectedSheetsForVariation.size === 0) {
+      setStatusMsg('⚠️ Selecione pelo menos uma página (aba) para aplicar a variação.');
+      return;
+    }
+
+    const modeLabels: Record<VariationMode, string> = {
+      uniform: 'Estocástico Uniforme (±%)',
+      wobble: 'Ondulação Senoidal (Wobble de Curva)',
+      gaussian: 'Ruído Gaussiano (Distribuição Normal)',
+      trend: 'Deslocamento de Tendência'
+    };
+
+    setStatusMsg(`⏳ Randomizando ${selectedSheetsForVariation.size} abas no modo "${modeLabels[variationMode]}" (±${maxPercent}%)...`);
+
+    try {
+      const nextParsed = cloneParsedData(parsedData);
+      let totalAlteredCount = 0;
+
+      nextParsed.sheets.forEach((sheet: XlsxSheet) => {
+        if (!selectedSheetsForVariation.has(sheet.name)) return;
+
+        const worksheet = workbookRef.current?.getWorksheet(sheet.name);
+        const colMap = detectRowColumnMap(sheet.matrix) || {
+          headerRow: 1,
+          colBase: customPreset.colBase,
+          colTolMax: customPreset.colTolMax,
+          colTolMin: customPreset.colTolMin,
+          colErroTotal1: customPreset.colErroTotal1,
+          colMedia: customPreset.colMedia,
+          colMeds: customPreset.colMeds,
+          colErro: customPreset.colErro,
+          colErroTotal2: customPreset.colErroTotal2,
+          colDesvPadrao: customPreset.colDesvPadrao,
+          colIncertezaA: 14,
+          colIncertezaComb: 15,
+          colK: 16,
+          colConfianca: 17,
+          colTendencia: 18
+        };
+
+        if (colMap) {
+          for (let r = colMap.headerRow; r < sheet.matrix.length; r++) {
+            const row = sheet.matrix[r];
+            if (!row) continue;
+
+            const baseCell = row[colMap.colBase - 1];
+            if (!baseCell) continue;
+            const baseVal = typeof baseCell.value === 'number'
+              ? baseCell.value
+              : parseFloat(String(baseCell.displayValue || baseCell.value || '').replace(',', '.'));
+            if (isNaN(baseVal) || baseVal <= 0) continue;
+
+            const currentMeds: number[] = [];
+            const selectedIndicesSet = new Set<number>();
+
+            colMap.colMeds.forEach((cIdx, idx) => {
+              const cell = row[cIdx - 1];
+              if (cell) {
+                const v = typeof cell.value === 'number'
+                  ? cell.value
+                  : parseFloat(String(cell.displayValue || '').replace(',', '.'));
+                currentMeds.push(!isNaN(v) ? v : baseVal);
+                if (selectedColumnsForVariation.has(cell.colLetter)) {
+                  selectedIndicesSet.add(idx);
+                }
+              }
+            });
+
+            let sheetMedia: number | undefined = undefined;
+            if (colMap.colMedia > 0 && row[colMap.colMedia - 1]) {
+              const mCell = row[colMap.colMedia - 1];
+              const v = typeof mCell?.value === 'number'
+                ? mCell.value
+                : parseFloat(String(mCell?.displayValue || '').replace(',', '.'));
+              if (!isNaN(v) && v > 0) sheetMedia = v;
+            }
+
+            const validMeds = generateValidRowMeasurements(
+              baseVal,
+              currentMeds,
+              maxPercent,
+              selectedIndicesSet,
+              sheetMedia,
+              variationMode,
+              r
+            );
+
+            colMap.colMeds.forEach((cIdx, idx) => {
+              if (selectedIndicesSet.has(idx)) {
+                const cell = row[cIdx - 1];
+                if (cell) {
+                  const newVal = validMeds[idx];
+                  cell.value = newVal;
+                  cell.displayValue = String(newVal).replace('.', ',');
+
+                  if (worksheet) {
+                    try {
+                      worksheet.getRow(r + 1).getCell(cIdx).value = newVal;
+                    } catch {}
+                  }
+                  totalAlteredCount++;
+                }
+              }
+            });
+          }
+        }
+
+        applyFormulasToMatrix(sheet.matrix, worksheet);
+      });
+
+      setParsedData(nextParsed);
+      setStatusMsg(`✨ Variação "${modeLabels[variationMode]}" aplicada com SUCESSO em ${totalAlteredCount} medições nas ${selectedSheetsForVariation.size} abas selecionadas.`);
+    } catch (err: any) {
+      setStatusMsg(`❌ Erro ao aplicar variação: ${err?.message || String(err)}`);
+    }
+  };
+
   // ── Action: Apply OS Data to Sheet 1 (Certificate) ──
   const handleApplyOsSubstitutions = () => {
     if (!parsedData) {
@@ -331,103 +525,16 @@ export const OperationPanel: React.FC = () => {
       setParsedData(result.updatedParsedData);
       setSubstitutionDiffs(result.diffs);
       setIsOsSubstituted(true);
-
-      // Salva atualização em recentes
-      const updatedRecents = saveRecentFile({
-        fileName: parsedData.fileName,
-        osId: selectedOs.id,
-        clienteNome: selectedOs.cliente_nome,
-        sheetsCount: parsedData.sheets.length,
-      });
-      setRecents(updatedRecents);
-
-      setStatusMsg(`🎉 ${result.replacedCount} campos substituídos com sucesso no certificado da OS #${selectedOs.id}!`);
+      setStatusMsg(`🎉 ${result.replacedCount} campos substituídos no certificado da OS #${selectedOs.id}!`);
     } catch (err: any) {
       setStatusMsg(`❌ Erro ao aplicar substituições: ${err?.message || String(err)}`);
-    }
-  };
-
-  // ── Action: Quick Randomize ALL Frequency Sheets ──
-  const handleRandomizeAllSheets = () => {
-    if (!parsedData) return;
-    setStatusMsg(`⏳ Randomizando medições de TODAS as páginas de frequência (±${maxPercent}%)...`);
-
-    try {
-      const nextParsed = cloneParsedData(parsedData);
-      let totalAlteredCount = 0;
-
-      // Percorre TODAS as folhas a partir do index 1 (ou qualquer folha com colunas medN)
-      nextParsed.sheets.forEach((sheet: XlsxSheet) => {
-        const worksheet = workbookRef.current?.getWorksheet(sheet.name);
-        const colMap = detectRowColumnMap(sheet.matrix);
-
-        if (colMap) {
-          for (let r = colMap.headerRow; r < sheet.matrix.length; r++) {
-            const row = sheet.matrix[r];
-            if (!row) continue;
-
-            const baseCell = row[colMap.colBase - 1];
-            if (!baseCell) continue;
-            const baseVal = typeof baseCell.value === 'number'
-              ? baseCell.value
-              : parseFloat(String(baseCell.displayValue || baseCell.value || '').replace(',', '.'));
-            if (isNaN(baseVal) || baseVal <= 0) continue;
-
-            const currentMeds: number[] = [];
-            colMap.colMeds.forEach((cIdx) => {
-              const cell = row[cIdx - 1];
-              if (cell) {
-                const v = typeof cell.value === 'number'
-                  ? cell.value
-                  : parseFloat(String(cell.displayValue || '').replace(',', '.'));
-                currentMeds.push(!isNaN(v) ? v : baseVal);
-              }
-            });
-
-            let sheetMedia: number | undefined = undefined;
-            if (colMap.colMedia > 0 && row[colMap.colMedia - 1]) {
-              const mCell = row[colMap.colMedia - 1];
-              const v = typeof mCell?.value === 'number'
-                ? mCell.value
-                : parseFloat(String(mCell?.displayValue || '').replace(',', '.'));
-              if (!isNaN(v) && v > 0) sheetMedia = v;
-            }
-
-            const validMeds = generateValidRowMeasurements(baseVal, currentMeds, maxPercent, undefined, sheetMedia);
-
-            colMap.colMeds.forEach((cIdx, idx) => {
-              const cell = row[cIdx - 1];
-              if (cell) {
-                const newVal = validMeds[idx];
-                cell.value = newVal;
-                cell.displayValue = String(newVal).replace('.', ',');
-
-                if (worksheet) {
-                  try {
-                    worksheet.getRow(r + 1).getCell(cIdx).value = newVal;
-                  } catch {}
-                }
-                totalAlteredCount++;
-              }
-            });
-          }
-        }
-
-        // Recalcula fórmulas da aba
-        applyFormulasToMatrix(sheet.matrix, worksheet);
-      });
-
-      setParsedData(nextParsed);
-      setStatusMsg(`✨ Randomização concluída! ${totalAlteredCount} medições variadas (±${maxPercent}%) em TODAS as abas de frequência.`);
-    } catch (err: any) {
-      setStatusMsg(`❌ Erro ao randomizar abas: ${err?.message || String(err)}`);
     }
   };
 
   // ── Export Handler ──
   const handleExportFile = async () => {
     if (!parsedData) return;
-    setStatusMsg('⏳ Exportando planilha formatada...');
+    setStatusMsg('⏳ Exportando planilha formatada com gráficos preservados...');
 
     try {
       let buffer: ArrayBuffer;
@@ -438,7 +545,6 @@ export const OperationPanel: React.FC = () => {
         const zip = new JSZip();
         await zip.loadAsync(originalBufferRef.current);
 
-        // Mapeamento de XMLs de folhas
         const sheetPaths: string[] = [];
         try {
           const wbXml = await zip.file('xl/workbook.xml')?.async('string');
@@ -509,7 +615,6 @@ export const OperationPanel: React.FC = () => {
               }
             }
           }
-
           zip.file(sheetFile.name, xml);
         }
 
@@ -517,7 +622,7 @@ export const OperationPanel: React.FC = () => {
       } else if (workbookRef.current) {
         buffer = await workbookRef.current.xlsx.writeBuffer();
       } else {
-        throw new Error('Sem buffer original para exportar');
+        throw new Error('Sem buffer de planilha para exportar');
       }
 
       const osPrefix = selectedOs ? `OS_${selectedOs.id}_` : '';
@@ -539,50 +644,68 @@ export const OperationPanel: React.FC = () => {
     }
   };
 
-  // ── Model / Template Handlers ──
-  const handleSaveAsTemplate = () => {
-    if (!parsedData) return;
-    if (!newTemplateName.trim()) {
-      setStatusMsg('⚠️ Digite um nome para o modelo.');
-      return;
-    }
-
-    const sheetNames = parsedData.sheets.map((s: XlsxSheet) => s.name);
-    const updated = saveTemplate(newTemplateName, newTemplateDesc, sheetNames);
-    setTemplates(updated);
-    setNewTemplateName('');
-    setNewTemplateDesc('');
-    setShowTemplatesModal(false);
-    setStatusMsg(`⭐ Modelo "${newTemplateName}" salvo em Meus Modelos!`);
-  };
+  const activeSheet = parsedData?.sheets?.[activeSheetIndex];
+  const allSheetNames = parsedData?.sheets.map(s => s.name) || [];
+  const candidateCols = Array.from(selectedColumnsForVariation);
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: '16px', height: '100%', overflowY: 'auto', paddingBottom: '24px' }}>
       
-      {/* Top Banner & Quick Storage Access */}
+      {/* Top Banner */}
       <div style={{ backgroundColor: '#18181b', border: '1px solid #27272a', borderRadius: '10px', padding: '16px 20px', display: 'flex', alignItems: 'center', justifyContent: 'space-between', flexWrap: 'wrap', gap: '12px' }}>
         <div>
           <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
             <Zap size={22} color="#f59e0b" />
             <h2 style={{ fontSize: '1.15rem', color: '#ffffff', fontWeight: '700', margin: 0 }}>
-              Central de Operação — Emissão por OS
+              Central de Operação — Laudos & Planilhas Customizáveis
             </h2>
           </div>
           <p style={{ fontSize: '0.82rem', color: '#a1a1aa', margin: '4px 0 0 0' }}>
-            Busque uma Ordem de Serviço, integre com os dados do certificado (Folha 1), randomize medições e exporte com gráficos preservados.
+            Vincule Ordens de Serviço (OS), escolha as abas e colunas para variação, configure o formato da curva e visualize o laudo em estilo PDF A4.
           </p>
         </div>
 
         <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
-          <button className="btn btn-secondary" onClick={() => setShowRecentsModal(true)}>
-            <Clock size={15} color="#3b82f6" /> Recentes ({recents.length})
-          </button>
-
-          <button className="btn btn-secondary" onClick={() => setShowTemplatesModal(true)}>
-            <LayoutTemplate size={15} color="#10b981" /> Modelos ({templates.length})
+          <button className="btn btn-secondary" onClick={() => setShowPresetModal(!showPresetModal)}>
+            <Settings2 size={15} color="#fbbf24" /> Preset de Colunas ({customPreset.name.split(' ')[0]})
           </button>
         </div>
       </div>
+
+      {/* Preset Customization Panel (Drawer) */}
+      {showPresetModal && (
+        <div style={{ backgroundColor: '#09090b', border: '1px solid #3f3f46', borderRadius: '8px', padding: '14px 18px', display: 'flex', flexDirection: 'column', gap: '10px' }}>
+          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+            <span style={{ fontSize: '0.85rem', fontWeight: '700', color: '#fbbf24', display: 'flex', alignItems: 'center', gap: '6px' }}>
+              <Settings2 size={16} /> Configuração de Layout e Posição de Colunas (Presets)
+            </span>
+            <button className="btn btn-secondary" style={{ padding: '4px 8px', fontSize: '0.75rem' }} onClick={() => setCustomPreset(DEFAULT_MEDLASER_PRESET)}>
+              Restaurar Padrão MedLaser
+            </button>
+          </div>
+          <p style={{ fontSize: '0.78rem', color: '#a1a1aa', margin: 0 }}>
+            Tudo vem pré-configurado para o caso padrão (Coluna Base A, Total D, Média E, Medições F..J, Erro K, Desvio M). Se sua planilha seguir outro modelo, ajuste os índices das colunas abaixo:
+          </p>
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(160px, 1fr))', gap: '10px', marginTop: '4px' }}>
+            <div>
+              <label style={{ fontSize: '0.72rem', color: '#a1a1aa', display: 'block' }}>Coluna Base (Valor Nominal):</label>
+              <input type="number" min="1" value={customPreset.colBase} onChange={(e) => setCustomPreset({ ...customPreset, colBase: parseInt(e.target.value) || 1 })} style={{ width: '100%', backgroundColor: '#18181b', color: '#fff', border: '1px solid #27272a', borderRadius: '4px', padding: '4px 8px', fontSize: '0.8rem' }} />
+            </div>
+            <div>
+              <label style={{ fontSize: '0.72rem', color: '#a1a1aa', display: 'block' }}>Coluna Média:</label>
+              <input type="number" min="1" value={customPreset.colMedia} onChange={(e) => setCustomPreset({ ...customPreset, colMedia: parseInt(e.target.value) || 5 })} style={{ width: '100%', backgroundColor: '#18181b', color: '#fff', border: '1px solid #27272a', borderRadius: '4px', padding: '4px 8px', fontSize: '0.8rem' }} />
+            </div>
+            <div>
+              <label style={{ fontSize: '0.72rem', color: '#a1a1aa', display: 'block' }}>Coluna Erro Total:</label>
+              <input type="number" min="1" value={customPreset.colErroTotal1} onChange={(e) => setCustomPreset({ ...customPreset, colErroTotal1: parseInt(e.target.value) || 4 })} style={{ width: '100%', backgroundColor: '#18181b', color: '#fff', border: '1px solid #27272a', borderRadius: '4px', padding: '4px 8px', fontSize: '0.8rem' }} />
+            </div>
+            <div>
+              <label style={{ fontSize: '0.72rem', color: '#a1a1aa', display: 'block' }}>Coluna Desvio Padrão:</label>
+              <input type="number" min="1" value={customPreset.colDesvPadrao} onChange={(e) => setCustomPreset({ ...customPreset, colDesvPadrao: parseInt(e.target.value) || 13 })} style={{ width: '100%', backgroundColor: '#18181b', color: '#fff', border: '1px solid #27272a', borderRadius: '4px', padding: '4px 8px', fontSize: '0.8rem' }} />
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* Status Bar */}
       {statusMsg && (
@@ -602,7 +725,7 @@ export const OperationPanel: React.FC = () => {
           </div>
           {selectedOs && (
             <span style={{ fontSize: '0.78rem', backgroundColor: 'rgba(16, 185, 129, 0.15)', color: '#10b981', border: '1px solid rgba(16, 185, 129, 0.3)', padding: '2px 8px', borderRadius: '4px', fontWeight: '600', display: 'flex', alignItems: 'center', gap: '4px' }}>
-              <CheckCircle2 size={13} /> OS #{selectedOs.id} Selecionada
+              <CheckCircle2 size={13} /> OS #{selectedOs.id} Vincular Automático
             </span>
           )}
         </div>
@@ -617,47 +740,18 @@ export const OperationPanel: React.FC = () => {
               value={osSearchQuery}
               onChange={handleOsSearchChange}
               onFocus={() => setShowOsDropdown(true)}
-              style={{
-                flex: 1,
-                backgroundColor: 'transparent',
-                border: 'none',
-                color: '#ffffff',
-                padding: '10px 12px',
-                fontSize: '0.88rem',
-                outline: 'none'
-              }}
+              style={{ flex: 1, backgroundColor: 'transparent', border: 'none', color: '#ffffff', padding: '10px 12px', fontSize: '0.88rem', outline: 'none' }}
             />
             {isSearchingOs && <RefreshCw size={16} className="animate-spin" color="#fbbf24" />}
           </div>
 
-          {/* Autocomplete Dropdown */}
           {showOsDropdown && osList.length > 0 && (
-            <div style={{
-              position: 'absolute',
-              top: '100%',
-              left: 0,
-              right: 0,
-              marginTop: '6px',
-              backgroundColor: '#18181b',
-              border: '1px solid #27272a',
-              borderRadius: '8px',
-              zIndex: 100,
-              maxHeight: '260px',
-              overflowY: 'auto',
-              boxShadow: '0 16px 32px rgba(0,0,0,0.8)'
-            }}>
+            <div style={{ position: 'absolute', top: '100%', left: 0, right: 0, marginTop: '6px', backgroundColor: '#18181b', border: '1px solid #27272a', borderRadius: '8px', zIndex: 100, maxHeight: '240px', overflowY: 'auto', boxShadow: '0 16px 32px rgba(0,0,0,0.8)' }}>
               {osList.map((os) => (
                 <div
                   key={os.id}
                   onClick={() => handleSelectOs(os)}
-                  style={{
-                    padding: '10px 14px',
-                    borderBottom: '1px solid #27272a',
-                    cursor: 'pointer',
-                    display: 'flex',
-                    alignItems: 'center',
-                    justifyContent: 'space-between'
-                  }}
+                  style={{ padding: '10px 14px', borderBottom: '1px solid #27272a', cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}
                   onMouseEnter={(e) => (e.currentTarget.style.backgroundColor = '#27272a')}
                   onMouseLeave={(e) => (e.currentTarget.style.backgroundColor = 'transparent')}
                 >
@@ -680,94 +774,15 @@ export const OperationPanel: React.FC = () => {
             </div>
           )}
         </div>
-
-        {/* Selected OS Details Card — Highlights the 5 Substitution Target Fields */}
-        {selectedOs && (
-          <div style={{ backgroundColor: '#09090b', border: '1px solid rgba(245, 158, 11, 0.3)', borderRadius: '8px', padding: '14px 16px', display: 'flex', flexDirection: 'column', gap: '10px' }}>
-            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', borderBottom: '1px solid #27272a', paddingBottom: '8px' }}>
-              <span style={{ fontSize: '0.82rem', fontWeight: '700', color: '#fbbf24', display: 'flex', alignItems: 'center', gap: '6px' }}>
-                <FileText size={15} /> Dados da OS a serem vinculados no Certificado (Folha 1):
-              </span>
-              <span style={{ fontSize: '0.76rem', color: '#71717a' }}>ID: #{selectedOs.id}</span>
-            </div>
-
-            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))', gap: '10px' }}>
-              {/* Field 1: Contratante */}
-              <div style={{ backgroundColor: '#18181b', padding: '8px 12px', borderRadius: '6px', border: '1px solid #27272a' }}>
-                <div style={{ fontSize: '0.72rem', color: '#a1a1aa', textTransform: 'uppercase', fontWeight: '600', display: 'flex', alignItems: 'center', gap: '4px' }}>
-                  <Building2 size={13} color="#3b82f6" /> 1. Contratante
-                </div>
-                <div style={{ fontSize: '0.83rem', color: '#ffffff', fontWeight: '600', marginTop: '2px' }}>
-                  {selectedOs.cliente_nome || 'N/A'}
-                </div>
-                <div style={{ fontSize: '0.74rem', color: '#a1a1aa' }}>
-                  {selectedOs.cliente_cpf_cnpj ? `CNPJ/CPF: ${selectedOs.cliente_cpf_cnpj}` : 'Sem CNPJ'}
-                </div>
-              </div>
-
-              {/* Field 2: Laboratório e Técnico Responsável */}
-              <div style={{ backgroundColor: '#18181b', padding: '8px 12px', borderRadius: '6px', border: '1px solid #27272a' }}>
-                <div style={{ fontSize: '0.72rem', color: '#a1a1aa', textTransform: 'uppercase', fontWeight: '600', display: 'flex', alignItems: 'center', gap: '4px' }}>
-                  <UserCheck size={13} color="#10b981" /> 2. Técnico Responsável
-                </div>
-                <div style={{ fontSize: '0.83rem', color: '#ffffff', fontWeight: '600', marginTop: '2px' }}>
-                  {selectedOs.tecnico_responsavel || 'Roberto Aldilei Favoreto'}
-                </div>
-                <div style={{ fontSize: '0.74rem', color: '#a1a1aa' }}>
-                  Laboratório Medlaser LTDA
-                </div>
-              </div>
-
-              {/* Field 3: Números de Série */}
-              <div style={{ backgroundColor: '#18181b', padding: '8px 12px', borderRadius: '6px', border: '1px solid #27272a' }}>
-                <div style={{ fontSize: '0.72rem', color: '#a1a1aa', textTransform: 'uppercase', fontWeight: '600', display: 'flex', alignItems: 'center', gap: '4px' }}>
-                  <Hash size={13} color="#ec4899" /> 3. Número de Série
-                </div>
-                <div style={{ fontSize: '0.83rem', color: '#ffffff', fontWeight: '600', marginTop: '2px' }}>
-                  {selectedOs.equipamento_codigo || 'N/A'}
-                </div>
-                <div style={{ fontSize: '0.74rem', color: '#a1a1aa' }}>
-                  Modelo: {selectedOs.equipamento_modelo || 'UroPulse'}
-                </div>
-              </div>
-
-              {/* Field 4: Datas */}
-              <div style={{ backgroundColor: '#18181b', padding: '8px 12px', borderRadius: '6px', border: '1px solid #27272a' }}>
-                <div style={{ fontSize: '0.72rem', color: '#a1a1aa', textTransform: 'uppercase', fontWeight: '600', display: 'flex', alignItems: 'center', gap: '4px' }}>
-                  <Calendar size={13} color="#8b5cf6" /> 4. Data do Ensaio
-                </div>
-                <div style={{ fontSize: '0.83rem', color: '#ffffff', fontWeight: '600', marginTop: '2px' }}>
-                  {formatDateExtenso(selectedOs.data_entrada || selectedOs.scraped_at)}
-                </div>
-                <div style={{ fontSize: '0.74rem', color: '#a1a1aa' }}>
-                  Validade: 12 Meses
-                </div>
-              </div>
-
-              {/* Field 5: Ordens de Serviço */}
-              <div style={{ backgroundColor: '#18181b', padding: '8px 12px', borderRadius: '6px', border: '1px solid #27272a' }}>
-                <div style={{ fontSize: '0.72rem', color: '#a1a1aa', textTransform: 'uppercase', fontWeight: '600', display: 'flex', alignItems: 'center', gap: '4px' }}>
-                  <FileText size={13} color="#f59e0b" /> 5. Ordem de Serviço
-                </div>
-                <div style={{ fontSize: '0.83rem', color: '#fbbf24', fontWeight: '700', marginTop: '2px' }}>
-                  #{selectedOs.id}
-                </div>
-                <div style={{ fontSize: '0.74rem', color: '#a1a1aa' }}>
-                  Serviço: {selectedOs.servico_tipo || 'Calibração'}
-                </div>
-              </div>
-            </div>
-          </div>
-        )}
       </div>
 
-      {/* STEP 2 & 3: Carregar Planilha & Aplicar Substituições no Certificado */}
+      {/* STEP 2: Carregar Planilha Base & Controles de Variação de Curva */}
       <div style={{ backgroundColor: '#18181b', border: '1px solid #27272a', borderRadius: '10px', padding: '18px 20px', display: 'flex', flexDirection: 'column', gap: '14px' }}>
-        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', flexWrap: 'wrap', gap: '10px' }}>
           <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
             <div style={{ backgroundColor: 'rgba(59, 130, 246, 0.15)', color: '#3b82f6', borderRadius: '50%', width: '26px', height: '26px', display: 'flex', alignItems: 'center', justifyContent: 'center', fontWeight: 'bold', fontSize: '0.85rem' }}>2</div>
             <h3 style={{ fontSize: '0.98rem', color: '#ffffff', fontWeight: '600', margin: 0 }}>
-              Carregar Planilha Base & Vincular Certificado
+              Carregar Planilha Base & Configurar Variação de Medições
             </h3>
           </div>
 
@@ -799,260 +814,238 @@ export const OperationPanel: React.FC = () => {
           </div>
         </div>
 
-        {/* Loaded File Info & Action Button */}
-        {parsedData ? (
+        {/* CUSTOMIZATION BOX: Escolha de Páginas & Colunas & Modo de Curva */}
+        {parsedData && (
           <div style={{ backgroundColor: '#09090b', border: '1px solid #27272a', borderRadius: '8px', padding: '14px 16px', display: 'flex', flexDirection: 'column', gap: '12px' }}>
-            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', flexWrap: 'wrap', gap: '10px' }}>
-              <div>
-                <div style={{ fontSize: '0.9rem', color: '#ffffff', fontWeight: '700', display: 'flex', alignItems: 'center', gap: '6px' }}>
-                  <FileSpreadsheet size={18} color="#10b981" /> {parsedData.fileName}
-                </div>
-                <div style={{ fontSize: '0.78rem', color: '#a1a1aa', marginTop: '2px' }}>
-                  Abas encontradas: {parsedData.sheets.map((s: XlsxSheet) => s.name).join(', ')} ({parsedData.measurementCellsCount} medições)
-                </div>
-              </div>
-
-              <button
-                className="btn btn-amber"
-                onClick={handleApplyOsSubstitutions}
-                disabled={!selectedOs}
-                style={{ opacity: selectedOs ? 1 : 0.5, cursor: selectedOs ? 'pointer' : 'not-allowed' }}
-              >
-                <RefreshCw size={16} /> Vincular Dados da OS na Folha 1 (Certificado)
-              </button>
-            </div>
-
-            {/* Visual Diff Table of Replaced Fields */}
-            {isOsSubstituted && substitutionDiffs.length > 0 && (
-              <div style={{ borderTop: '1px solid #27272a', paddingTop: '12px', display: 'flex', flexDirection: 'column', gap: '8px' }}>
-                <span style={{ fontSize: '0.8rem', color: '#10b981', fontWeight: '700', display: 'flex', alignItems: 'center', gap: '4px' }}>
-                  <CheckCircle2 size={14} /> Resumo dos {substitutionDiffs.length} campos substituídos na Folha 1:
-                </span>
-                <div style={{ maxHeight: '180px', overflowY: 'auto', border: '1px solid #27272a', borderRadius: '6px' }}>
-                  <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '0.78rem' }}>
-                    <thead style={{ backgroundColor: '#18181b', color: '#a1a1aa', textTransform: 'uppercase' }}>
-                      <tr>
-                        <th style={{ padding: '6px 10px', textAlign: 'left' }}>Categoria</th>
-                        <th style={{ padding: '6px 10px', textAlign: 'left' }}>Campo / Endereço</th>
-                        <th style={{ padding: '6px 10px', textAlign: 'left' }}>Valor Anterior</th>
-                        <th style={{ padding: '6px 10px', textAlign: 'left' }}>Novo Valor (OS)</th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {substitutionDiffs.map((diff, i) => (
-                        <tr key={i} style={{ borderTop: '1px solid #27272a' }}>
-                          <td style={{ padding: '6px 10px', color: '#fbbf24', fontWeight: '600' }}>{diff.fieldCategory}</td>
-                          <td style={{ padding: '6px 10px', color: '#f4f4f5' }}>{diff.label} <span style={{ color: '#71717a' }}>({diff.address})</span></td>
-                          <td style={{ padding: '6px 10px', color: '#ef4444', textDecoration: 'line-through' }}>{diff.oldValue || '(Vazio)'}</td>
-                          <td style={{ padding: '6px 10px', color: '#10b981', fontWeight: '600' }}>{diff.newValue}</td>
-                        </tr>
-                      ))}
-                    </tbody>
-                  </table>
-                </div>
-              </div>
-            )}
-          </div>
-        ) : (
-          <div style={{ backgroundColor: '#09090b', border: '2px dashed #27272a', borderRadius: '8px', padding: '24px', textAlign: 'center', cursor: 'pointer' }} onClick={() => fileInputRef.current?.click()}>
-            <Upload size={32} color="#71717a" style={{ marginBottom: '8px' }} />
-            <div style={{ color: '#ffffff', fontWeight: '600', fontSize: '0.9rem' }}>
-              Clique ou arraste um arquivo XLSX para iniciar o laudo
-            </div>
-            <div style={{ color: '#71717a', fontSize: '0.8rem', marginTop: '4px' }}>
-              Suporta laudos com abas de certificado (Relatório) e medições de frequência (3Hz, 5Hz...)
-            </div>
-          </div>
-        )}
-      </div>
-
-      {/* STEP 4: Randomização Automática de Frequências (Todas as Abas) */}
-      <div style={{ backgroundColor: '#18181b', border: '1px solid #27272a', borderRadius: '10px', padding: '18px 20px', display: 'flex', flexDirection: 'column', gap: '14px' }}>
-        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
-          <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
-            <div style={{ backgroundColor: 'rgba(236, 72, 153, 0.15)', color: '#ec4899', borderRadius: '50%', width: '26px', height: '26px', display: 'flex', alignItems: 'center', justifyContent: 'center', fontWeight: 'bold', fontSize: '0.85rem' }}>3</div>
-            <h3 style={{ fontSize: '0.98rem', color: '#ffffff', fontWeight: '600', margin: 0 }}>
-              Randomização Automática de Frequências (Todas as Páginas)
-            </h3>
-          </div>
-
-          {parsedData && (
-            <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
-              <div style={{ display: 'flex', alignItems: 'center', gap: '8px', backgroundColor: '#09090b', padding: '4px 12px', borderRadius: '6px', border: '1px solid #27272a' }}>
-                <span style={{ fontSize: '0.78rem', color: '#a1a1aa', fontWeight: '600' }}>±{maxPercent}%</span>
-                <input type="range" min="1" max="25" value={maxPercent} onChange={(e) => setMaxPercent(parseInt(e.target.value, 10))} style={{ width: '80px', accentColor: '#ec4899' }} />
-              </div>
-
-              <button className="btn btn-amber" onClick={handleRandomizeAllSheets} style={{ backgroundColor: '#ec4899', borderColor: '#db2777', color: '#ffffff' }}>
-                <Sparkles size={16} /> Randomizar TODAS as Frequências (±{maxPercent}%)
-              </button>
-            </div>
-          )}
-        </div>
-
-        <p style={{ fontSize: '0.81rem', color: '#a1a1aa', margin: 0 }}>
-          Gera variação estocástica estrita em todas as colunas de medição (med1 a med5) de todas as abas de frequência (3Hz, 5Hz, 8Hz, 10Hz, 12Hz) mantendo o Erro Total rigorosamente dentro dos limites de tolerância (±20%).
-        </p>
-
-        {/* Visualização do Gráfico de Erro por Aba */}
-        {parsedData && parsedData.sheets.length > 0 && (
-          <div style={{ borderTop: '1px solid #27272a', paddingTop: '14px', display: 'flex', flexDirection: 'column', gap: '12px' }}>
-            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', flexWrap: 'wrap', gap: '8px' }}>
-              <span style={{ fontSize: '0.82rem', color: '#fbbf24', fontWeight: '700', display: 'flex', alignItems: 'center', gap: '6px' }}>
-                <Activity size={16} /> Visualização em Tempo Real do Gráfico de Erros:
+            {/* Sheet Selector Checkboxes */}
+            <div>
+              <span style={{ fontSize: '0.78rem', color: '#a1a1aa', fontWeight: '700', display: 'flex', alignItems: 'center', gap: '6px', marginBottom: '8px' }}>
+                <CheckSquare size={14} color="#3b82f6" /> 1. Escolher Páginas (Abas) para Aplicar Variação:
               </span>
-
-              {/* Aba Selector Pills */}
-              <div style={{ display: 'flex', gap: '6px', flexWrap: 'wrap' }}>
-                {parsedData.sheets.map((sheet: XlsxSheet, idx: number) => {
-                  const isCandidateSheet = sheet.columnsWithCandidates && sheet.columnsWithCandidates.length > 0;
-                  const isActive = activeSheetIndex === idx;
+              <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap' }}>
+                {allSheetNames.map((sheetName, sIdx) => {
+                  const isChecked = selectedSheetsForVariation.has(sheetName);
                   return (
                     <button
-                      key={sheet.name}
-                      onClick={() => setActiveSheetIndex(idx)}
+                      key={sheetName}
+                      onClick={() => toggleSheetForVariation(sheetName)}
                       style={{
-                        padding: '4px 10px',
-                        fontSize: '0.76rem',
+                        backgroundColor: isChecked ? 'rgba(59, 130, 246, 0.2)' : '#18181b',
+                        color: isChecked ? '#60a5fa' : '#a1a1aa',
+                        border: `1px solid ${isChecked ? '#3b82f6' : '#27272a'}`,
                         borderRadius: '6px',
-                        border: isActive ? '1px solid #f59e0b' : '1px solid #27272a',
-                        backgroundColor: isActive ? 'rgba(245, 158, 11, 0.15)' : '#09090b',
-                        color: isActive ? '#fbbf24' : '#a1a1aa',
+                        padding: '6px 12px',
+                        fontSize: '0.8rem',
+                        fontWeight: isChecked ? '700' : '400',
                         cursor: 'pointer',
-                        fontWeight: isActive ? '700' : '400'
+                        display: 'flex',
+                        alignItems: 'center',
+                        gap: '6px'
                       }}
                     >
-                      {sheet.name} {isCandidateSheet ? '📊' : ''}
+                      {isChecked ? <CheckSquare size={14} /> : <Square size={14} />}
+                      {sIdx === 0 ? `📄 ${sheetName} (Folha OS)` : `📊 ${sheetName}`}
                     </button>
                   );
                 })}
               </div>
             </div>
 
-            <div style={{ display: 'flex', justifyContent: 'center', backgroundColor: '#09090b', borderRadius: '8px', padding: '12px', border: '1px solid #27272a' }}>
-              <div style={{ width: '45%', minWidth: '400px', maxWidth: '100%' }}>
-                <MeasurementChart
-                  sheetData={parsedData.sheets[activeSheetIndex] || parsedData.sheets[1] || parsedData.sheets[0]}
-                  frequencyLabel={parsedData.sheets[activeSheetIndex]?.name || 'Frequência'}
-                />
+            {/* Column Selector Checkboxes */}
+            {candidateCols.length > 0 && (
+              <div>
+                <span style={{ fontSize: '0.78rem', color: '#a1a1aa', fontWeight: '700', display: 'flex', alignItems: 'center', gap: '6px', marginBottom: '8px' }}>
+                  <Filter size={14} color="#fbbf24" /> 2. Escolher Colunas de Medição para Variar:
+                </span>
+                <div style={{ display: 'flex', gap: '6px', flexWrap: 'wrap' }}>
+                  {candidateCols.map((colLetter) => {
+                    const isChecked = selectedColumnsForVariation.has(colLetter);
+                    return (
+                      <button
+                        key={colLetter}
+                        onClick={() => toggleColumnForVariation(colLetter)}
+                        style={{
+                          backgroundColor: isChecked ? 'rgba(245, 158, 11, 0.2)' : '#18181b',
+                          color: isChecked ? '#fbbf24' : '#a1a1aa',
+                          border: `1px solid ${isChecked ? '#f59e0b' : '#27272a'}`,
+                          borderRadius: '4px',
+                          padding: '4px 10px',
+                          fontSize: '0.78rem',
+                          fontWeight: isChecked ? '700' : '400',
+                          cursor: 'pointer',
+                          display: 'flex',
+                          alignItems: 'center',
+                          gap: '4px'
+                        }}
+                      >
+                        {isChecked ? <CheckSquare size={13} /> : <Square size={13} />}
+                        Coluna {colLetter}
+                      </button>
+                    );
+                  })}
+                </div>
+              </div>
+            )}
+
+            {/* Mode & Noise Control */}
+            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', flexWrap: 'wrap', gap: '12px', borderTop: '1px solid #27272a', paddingTop: '10px' }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: '12px', flexWrap: 'wrap' }}>
+                <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
+                  <Waves size={16} color="#ec4899" />
+                  <span style={{ fontSize: '0.78rem', color: '#a1a1aa', fontWeight: '600' }}>Formato da Curva:</span>
+                </div>
+                <select
+                  value={variationMode}
+                  onChange={(e) => setVariationMode(e.target.value as VariationMode)}
+                  style={{ backgroundColor: '#18181b', color: '#ffffff', border: '1px solid #27272a', borderRadius: '6px', padding: '6px 12px', fontSize: '0.8rem', outline: 'none' }}
+                >
+                  <option value="wobble">🌊 Ondulação Senoidal (Wobble de Curva)</option>
+                  <option value="gaussian">🎲 Ruído Gaussiano (Distribuição Normal)</option>
+                  <option value="trend">📈 Deslocamento de Tendência (Linear/Curvado)</option>
+                  <option value="uniform">📊 Estocástico Uniforme (Padrão ±%)</option>
+                </select>
+
+                <div style={{ display: 'flex', alignItems: 'center', gap: '8px', backgroundColor: '#18181b', padding: '4px 10px', borderRadius: '6px', border: '1px solid #27272a' }}>
+                  <span style={{ fontSize: '0.78rem', color: '#a1a1aa', fontWeight: '500' }}>Intensidade ±{maxPercent}%</span>
+                  <input type="range" min="1" max="25" value={maxPercent} onChange={(e) => setMaxPercent(parseInt(e.target.value, 10))} style={{ width: '70px', accentColor: '#fbbf24' }} />
+                </div>
+              </div>
+
+              <div style={{ display: 'flex', gap: '8px' }}>
+                <button className="btn btn-amber" onClick={handleRandomizeSelectedSheets}>
+                  <Sparkles size={16} /> Aplicar Variação ({selectedSheetsForVariation.size} Abas)
+                </button>
               </div>
             </div>
           </div>
         )}
       </div>
 
-      {/* STEP 5: Exportação & Modelo */}
-      <div style={{ backgroundColor: '#18181b', border: '1px solid #27272a', borderRadius: '10px', padding: '18px 20px', display: 'flex', alignItems: 'center', justifyContent: 'space-between', flexWrap: 'wrap', gap: '12px' }}>
-        <div>
-          <h3 style={{ fontSize: '0.98rem', color: '#ffffff', fontWeight: '600', margin: 0 }}>
-            Exportação & Gerenciamento de Modelo
-          </h3>
-          <p style={{ fontSize: '0.8rem', color: '#a1a1aa', margin: '2px 0 0 0' }}>
-            Exporte o arquivo XLSX final preservando os gráficos ou salve a estrutura atual em seus modelos.
-          </p>
-        </div>
+      {/* STEP 3: Alternar entre Visualização do Relatório (PDF 1ª Página) e Editor de Grade */}
+      {parsedData && (
+        <div style={{ backgroundColor: '#18181b', border: '1px solid #27272a', borderRadius: '10px', padding: '18px 20px', display: 'flex', flexDirection: 'column', gap: '14px' }}>
+          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', borderBottom: '1px solid #27272a', paddingBottom: '12px' }}>
+            <div style={{ display: 'flex', gap: '6px' }}>
+              <button
+                className={`tab-btn ${activeViewTab === 'report_pdf' ? 'active' : ''}`}
+                onClick={() => setActiveViewTab('report_pdf')}
+                style={{ padding: '8px 16px', fontSize: '0.85rem' }}
+              >
+                <FileText size={16} color="#ef4444" /> Relatório / Certificado (PDF A4)
+              </button>
 
-        <div style={{ display: 'flex', gap: '10px' }}>
-          <button className="btn btn-secondary" onClick={() => setShowTemplatesModal(true)} disabled={!parsedData}>
-            <Save size={15} /> Salvar como Modelo
-          </button>
-
-          <button className="btn btn-primary" style={{ backgroundColor: '#10b981', color: '#ffffff' }} onClick={handleExportFile} disabled={!parsedData}>
-            <Save size={16} /> Exportar Planilha Processada (.xlsx)
-          </button>
-        </div>
-      </div>
-
-      {/* ── MODAL: Meus Recentes ── */}
-      {showRecentsModal && (
-        <div style={{ position: 'fixed', top: 0, left: 0, right: 0, bottom: 0, backgroundColor: 'rgba(0,0,0,0.75)', zIndex: 999, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
-          <div style={{ backgroundColor: '#18181b', border: '1px solid #27272a', borderRadius: '12px', width: '500px', maxWidth: '90%', padding: '20px', display: 'flex', flexDirection: 'column', gap: '14px' }}>
-            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', borderBottom: '1px solid #27272a', paddingBottom: '10px' }}>
-              <h3 style={{ fontSize: '1rem', color: '#ffffff', fontWeight: '700', margin: 0, display: 'flex', alignItems: 'center', gap: '6px' }}>
-                <Clock size={18} color="#3b82f6" /> Meus Recentes
-              </h3>
-              <button style={{ backgroundColor: 'transparent', border: 'none', color: '#a1a1aa', cursor: 'pointer', fontSize: '1.1rem' }} onClick={() => setShowRecentsModal(false)}>✕</button>
+              <button
+                className={`tab-btn ${activeViewTab === 'editor' ? 'active' : ''}`}
+                onClick={() => setActiveViewTab('editor')}
+                style={{ padding: '8px 16px', fontSize: '0.85rem' }}
+              >
+                <FileSpreadsheet size={16} color="#10b981" /> Grade da Planilha (Frequências)
+              </button>
             </div>
 
-            {recents.length === 0 ? (
-              <p style={{ fontSize: '0.85rem', color: '#a1a1aa', textAlign: 'center', padding: '20px 0' }}>
-                Nenhuma planilha recente salva.
-              </p>
-            ) : (
-              <div style={{ maxHeight: '280px', overflowY: 'auto', display: 'flex', flexDirection: 'column', gap: '8px' }}>
-                {recents.map((item) => (
-                  <div key={item.id} style={{ backgroundColor: '#09090b', border: '1px solid #27272a', borderRadius: '8px', padding: '10px 14px', display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
-                    <div>
-                      <div style={{ fontSize: '0.85rem', color: '#ffffff', fontWeight: '600' }}>{item.fileName}</div>
-                      <div style={{ fontSize: '0.74rem', color: '#a1a1aa', marginTop: '2px' }}>
-                        {item.osId ? `OS #${item.osId} • ${item.clienteNome || ''}` : 'Sem OS associada'} • {item.dateUpdated}
-                      </div>
-                    </div>
-                    <button className="btn btn-secondary" style={{ padding: '4px 8px' }} onClick={() => setRecents(removeRecentFile(item.id))}>
-                      <Trash2 size={13} color="#ef4444" />
-                    </button>
-                  </div>
+            <button className="btn btn-primary" style={{ backgroundColor: '#10b981' }} onClick={handleExportFile}>
+              <Printer size={16} /> Exportar XLSX Completo
+            </button>
+          </div>
+
+          {/* VIEW MODE 1: Visualização do Relatório no Estilo PDF A4 (1ª Página) */}
+          {activeViewTab === 'report_pdf' && (
+            <div style={{ width: '100%', padding: '12px 0' }}>
+              <ReportDocumentView
+                order={selectedOs}
+                sheet={parsedData?.sheets?.[0]}
+                workbookRef={workbookRef.current}
+              />
+            </div>
+          )}
+
+          {/* VIEW MODE 2: Grade Interativa da Planilha */}
+          {activeViewTab === 'editor' && (
+            <div style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
+              {/* Sheet Tabs */}
+              <div style={{ display: 'flex', gap: '4px', overflowX: 'auto', borderBottom: '1px solid #27272a', paddingBottom: '4px' }}>
+                {parsedData.sheets.map((sheet, sIdx) => (
+                  <button
+                    key={sheet.name}
+                    onClick={() => setActiveSheetIndex(sIdx)}
+                    style={{
+                      padding: '6px 14px',
+                      fontSize: '0.8rem',
+                      fontWeight: activeSheetIndex === sIdx ? '700' : '400',
+                      backgroundColor: activeSheetIndex === sIdx ? '#27272a' : 'transparent',
+                      color: activeSheetIndex === sIdx ? '#ffffff' : '#a1a1aa',
+                      border: 'none',
+                      borderBottom: activeSheetIndex === sIdx ? (sIdx === 0 ? '2px solid #2563eb' : '2px solid #fbbf24') : 'none',
+                      borderRadius: '4px 4px 0 0',
+                      cursor: 'pointer',
+                      display: 'flex',
+                      alignItems: 'center',
+                      gap: '6px'
+                    }}
+                  >
+                    <span>{sIdx === 0 ? '📄' : '📊'}</span>
+                    <span>{sIdx === 0 ? `${sheet.name} (Laudo PDF)` : sheet.name}</span>
+                  </button>
                 ))}
               </div>
-            )}
-          </div>
-        </div>
-      )}
 
-      {/* ── MODAL: Meus Modelos ── */}
-      {showTemplatesModal && (
-        <div style={{ position: 'fixed', top: 0, left: 0, right: 0, bottom: 0, backgroundColor: 'rgba(0,0,0,0.75)', zIndex: 999, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
-          <div style={{ backgroundColor: '#18181b', border: '1px solid #27272a', borderRadius: '12px', width: '560px', maxWidth: '90%', padding: '20px', display: 'flex', flexDirection: 'column', gap: '14px' }}>
-            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', borderBottom: '1px solid #27272a', paddingBottom: '10px' }}>
-              <h3 style={{ fontSize: '1rem', color: '#ffffff', fontWeight: '700', margin: 0, display: 'flex', alignItems: 'center', gap: '6px' }}>
-                <LayoutTemplate size={18} color="#10b981" /> Meus Modelos (Templates)
-              </h3>
-              <button style={{ backgroundColor: 'transparent', border: 'none', color: '#a1a1aa', cursor: 'pointer', fontSize: '1.1rem' }} onClick={() => setShowTemplatesModal(false)}>✕</button>
-            </div>
-
-            {/* Criar Novo Modelo */}
-            {parsedData && (
-              <div style={{ backgroundColor: '#09090b', border: '1px dashed rgba(16, 185, 129, 0.4)', borderRadius: '8px', padding: '12px', display: 'flex', flexDirection: 'column', gap: '8px' }}>
-                <div style={{ fontSize: '0.8rem', color: '#10b981', fontWeight: '700' }}>Salvar planilha atual como modelo:</div>
-                <input
-                  type="text"
-                  placeholder="Nome do Modelo (ex: Modelo UROPULSE 2026)"
-                  value={newTemplateName}
-                  onChange={(e) => setNewTemplateName(e.target.value)}
-                  style={{ backgroundColor: '#18181b', border: '1px solid #27272a', borderRadius: '6px', color: '#ffffff', padding: '6px 10px', fontSize: '0.8rem' }}
-                />
-                <input
-                  type="text"
-                  placeholder="Descrição opcional..."
-                  value={newTemplateDesc}
-                  onChange={(e) => setNewTemplateDesc(e.target.value)}
-                  style={{ backgroundColor: '#18181b', border: '1px solid #27272a', borderRadius: '6px', color: '#ffffff', padding: '6px 10px', fontSize: '0.8rem' }}
-                />
-                <button className="btn btn-primary" style={{ backgroundColor: '#10b981', color: '#ffffff', alignSelf: 'flex-end', padding: '6px 12px', fontSize: '0.78rem' }} onClick={handleSaveAsTemplate}>
-                  <Plus size={14} /> Salvar Modelo
-                </button>
-              </div>
-            )}
-
-            {/* Lista de Modelos */}
-            <div style={{ maxHeight: '240px', overflowY: 'auto', display: 'flex', flexDirection: 'column', gap: '8px' }}>
-              {templates.map((tmpl) => (
-                <div key={tmpl.id} style={{ backgroundColor: '#09090b', border: '1px solid #27272a', borderRadius: '8px', padding: '10px 14px', display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
-                  <div>
-                    <div style={{ fontSize: '0.85rem', color: '#ffffff', fontWeight: '600' }}>{tmpl.name}</div>
-                    <div style={{ fontSize: '0.76rem', color: '#a1a1aa', marginTop: '2px' }}>{tmpl.description}</div>
-                    <div style={{ fontSize: '0.71rem', color: '#71717a', marginTop: '2px' }}>Abas: {tmpl.sheetNames.join(', ')} • Criado em {tmpl.dateCreated}</div>
-                  </div>
-                  <button className="btn btn-secondary" style={{ padding: '4px 8px' }} onClick={() => setTemplates(removeTemplate(tmpl.id))}>
-                    <Trash2 size={13} color="#ef4444" />
-                  </button>
+              {/* Se a 1ª página estiver selecionada no editor, renderiza o documento human-readable */}
+              {activeSheetIndex === 0 ? (
+                <div style={{ width: '100%', padding: '12px 0', display: 'flex', justifyContent: 'center' }}>
+                  <ReportDocumentView
+                    order={selectedOs}
+                    sheet={parsedData?.sheets?.[0]}
+                    workbookRef={workbookRef.current}
+                  />
                 </div>
-              ))}
+              ) : (
+                /* Matrix Grid para abas de medição (3Hz, 5Hz, etc) */
+                activeSheet && (
+                  <div style={{ overflowX: 'auto', maxHeight: '480px', border: '1px solid #27272a', borderRadius: '6px' }}>
+                    <table className="xlsx-table" style={{ width: '100%', borderCollapse: 'collapse', fontSize: '0.78rem' }}>
+                      <thead>
+                        <tr style={{ backgroundColor: '#09090b', color: '#a1a1aa' }}>
+                          <th style={{ padding: '6px 10px', border: '1px solid #27272a', width: '40px' }}>#</th>
+                          {Array.from({ length: Math.min(activeSheet.colCount, 20) }).map((_, cIdx) => (
+                            <th key={cIdx} style={{ padding: '6px 10px', border: '1px solid #27272a' }}>
+                              {getColLetter(cIdx + 1)}
+                            </th>
+                          ))}
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {activeSheet.matrix.slice(0, 35).map((row, rIdx) => (
+                          <tr key={rIdx} style={{ backgroundColor: rIdx % 2 === 0 ? '#18181b' : '#141417' }}>
+                            <td style={{ padding: '4px 8px', border: '1px solid #27272a', color: '#71717a', textAlign: 'center', fontWeight: '600' }}>
+                              {rIdx + 1}
+                            </td>
+                            {Array.from({ length: Math.min(activeSheet.colCount, 20) }).map((_, cIdx) => {
+                              const cell = row[cIdx];
+                              return (
+                                <td
+                                  key={cIdx}
+                                  style={{
+                                    padding: '4px 8px',
+                                    border: '1px solid #27272a',
+                                    color: cell?.isNumeric ? '#60a5fa' : '#f4f4f5',
+                                    fontWeight: cell?.isNumeric ? '600' : '400'
+                                  }}
+                                >
+                                  {cell?.displayValue || ''}
+                                </td>
+                              );
+                            })}
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                )
+              )}
             </div>
-          </div>
+          )}
         </div>
       )}
-
     </div>
   );
 };

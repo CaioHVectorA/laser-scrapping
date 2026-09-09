@@ -14,8 +14,8 @@
     "build:renderer": "vite build",
     "build:electron": "tsc -p tsconfig.electron.json",
     "build": "bun run build:renderer && bun run build:electron",
-    "app": "bun run build:electron && concurrently \"vite\" \"cross-env ELECTRON_DEV_URL=http://localhost:5173 npx electron .\"",
-    "app:headed": "bun run build:electron && concurrently \"vite\" \"cross-env ELECTRON_DEV_URL=http://localhost:5173 HEADLESS=false npx electron .\"",
+    "app": "bun run build:electron && concurrently \"bun src/server.ts\" \"vite\" \"cross-env ELECTRON_DEV_URL=http://localhost:5173 npx electron .\"",
+    "app:headed": "bun run build:electron && concurrently \"bun src/server.ts\" \"vite\" \"cross-env ELECTRON_DEV_URL=http://localhost:5173 HEADLESS=false npx electron .\"",
     "check": "tsc --noEmit"
   },
   "keywords": [

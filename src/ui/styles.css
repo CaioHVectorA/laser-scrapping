@@ -497,3 +497,52 @@ tr:hover td {
   font-weight: 500;
 }
 
+/* Regras de Impressão e PDF A4 */
+@media print {
+  body {
+    background-color: #ffffff !important;
+    color: #000000 !important;
+    overflow: visible !important;
+    height: auto !important;
+    width: auto !important;
+    -webkit-print-color-adjust: exact !important;
+    print-color-adjust: exact !important;
+  }
+
+  #root {
+    display: block !important;
+    height: auto !important;
+    width: auto !important;
+  }
+
+  .app-header,
+  .nav-tabs,
+  .no-print,
+  .sheets-tabs-bar,
+  .dropzone-box,
+  .btn {
+    display: none !important;
+  }
+
+  .app-content {
+    padding: 0 !important;
+    overflow: visible !important;
+  }
+
+  .report-doc-container {
+    width: 100% !important;
+    margin: 0 !important;
+    padding: 0 !important;
+  }
+
+  .pdf-paper {
+    box-shadow: none !important;
+    border: none !important;
+    padding: 15mm 12mm !important;
+    width: 100% !important;
+    max-width: 100% !important;
+    margin: 0 auto !important;
+    page-break-after: always;
+  }
+}
+

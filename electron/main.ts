@@ -13,33 +13,62 @@ let backendProcess: ChildProcess | null = null;
 const BACKEND_PORT = 3001;
 const BACKEND_URL = `http://localhost:${BACKEND_PORT}`;
 
+import fs from 'node:fs';
+
 // ─── Start Bun API Server as child process ──────────────────────────────
-function startBackend() {
+async function startBackend() {
+  try {
+    const check = await fetch(`${BACKEND_URL}/api/scraper/status`);
+    if (check.ok) {
+      console.log(`✅ Backend já está em execução na porta ${BACKEND_PORT}`);
+      return;
+    }
+  } catch {}
+
   const serverPath = path.join(projectRoot, 'src', 'server.ts');
   console.log(`🚀 Starting Bun backend: ${serverPath}`);
 
-  // Try bun first, fall back to npx tsx
-  const bunPath = process.env.BUN_PATH
-    || path.join(process.env.HOME || '', '.bun', 'bin', 'bun');
+  const isWin = process.platform === 'win32';
+  const userDir = process.env.USERPROFILE || process.env.HOME || '';
+  const winBun = path.join(userDir, '.bun', 'bin', 'bun.exe');
+  const unixBun = path.join(userDir, '.bun', 'bin', 'bun');
 
-  backendProcess = spawn(bunPath, [serverPath], {
-    cwd: projectRoot,
-    env: { ...process.env, PORT: String(BACKEND_PORT) },
-    stdio: ['ignore', 'pipe', 'pipe'],
-  });
+  let bunCmd = 'bun';
+  if (process.env.BUN_PATH) {
+    bunCmd = process.env.BUN_PATH;
+  } else if (isWin && fs.existsSync(winBun)) {
+    bunCmd = winBun;
+  } else if (!isWin && fs.existsSync(unixBun)) {
+    bunCmd = unixBun;
+  }
 
-  backendProcess.stdout?.on('data', (data: Buffer) => {
-    process.stdout.write(`[backend] ${data}`);
-  });
+  try {
+    backendProcess = spawn(bunCmd, [serverPath], {
+      cwd: projectRoot,
+      env: { ...process.env, PORT: String(BACKEND_PORT) },
+      stdio: ['ignore', 'pipe', 'pipe'],
+      shell: isWin,
+    });
 
-  backendProcess.stderr?.on('data', (data: Buffer) => {
-    process.stderr.write(`[backend] ${data}`);
-  });
+    backendProcess.stdout?.on('data', (data: Buffer) => {
+      process.stdout.write(`[backend] ${data}`);
+    });
 
-  backendProcess.on('exit', (code) => {
-    console.log(`[backend] Process exited with code ${code}`);
-    backendProcess = null;
-  });
+    backendProcess.stderr?.on('data', (data: Buffer) => {
+      process.stderr.write(`[backend] ${data}`);
+    });
+
+    backendProcess.on('error', (err) => {
+      console.error('❌ Erro ao iniciar processo backend:', err);
+    });
+
+    backendProcess.on('exit', (code) => {
+      console.log(`[backend] Process exited with code ${code}`);
+      backendProcess = null;
+    });
+  } catch (err) {
+    console.error('❌ Falha ao tentar spawnar backend:', err);
+  }
 }
 
 function stopBackend() {

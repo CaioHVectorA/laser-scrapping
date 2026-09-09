@@ -95,3 +95,13 @@ export async function listXlsxFiles(): Promise<{ name: string; path: string }[]>
   if (!res.ok) throw new Error(await res.text());
   return res.json();
 }
+
+export async function saveXlsxToServer(fileName: string, fileBase64: string): Promise<{ success: boolean; name: string; path: string }> {
+  const res = await fetch(`${API_BASE}/api/xlsx/save`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ fileName, fileBase64 }),
+  });
+  if (!res.ok) throw new Error(await res.text());
+  return res.json();
+}

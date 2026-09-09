@@ -1,9 +1,15 @@
 import React, { useState, useEffect, useRef } from 'react';
 import ExcelJS from 'exceljs';
-import { parseXlsx, randomizeXlsx, listXlsxFiles } from '../api.js';
-import { FileSpreadsheet, Sparkles, Undo, Redo, Save, Upload, FolderOpen, Info, ChevronDown, Layers, CheckSquare, Square, Filter, BarChart3 } from 'lucide-react';
+import { parseXlsx, randomizeXlsx, listXlsxFiles, saveXlsxToServer, getOrders } from '../api.js';
+import {
+  FileSpreadsheet, Sparkles, Undo, Redo, Save, Upload, FolderOpen,
+  Info, ChevronDown, Layers, CheckSquare, Square, Filter, BarChart3,
+  FileText, Table, HardDrive, Download, Search, X, Check, ClipboardList
+} from 'lucide-react';
 import { MeasurementChart } from './MeasurementChart.js';
+import { ReportDocumentView } from './ReportDocumentView.js';
 import { applyFormulasToMatrix, generateValidRowMeasurements, detectRowColumnMap } from '../formulas.js';
+import { applyOsSubstitutions, DbOrder } from '../osSubstitution.js';
 
 interface XlsxCellData {
   address: string;
@@ -84,7 +90,6 @@ function patchCellInXml(xml: string, address: string, value: number): string {
 
   let openTag = match[1];
   const innerContent = match[2] || '';
-  // Remove atributo de tipo de string compartilhada se presente
   openTag = openTag.replace(/\s+t="[^"]*"/g, '');
 
   const formulaMatch = innerContent.match(/<f\b[^>]*?>[\s\S]*?<\/f>/);
@@ -99,15 +104,29 @@ export const XlsxEditor: React.FC = () => {
   const [parsedData, setParsedData] = useState<XlsxParsed | null>(null);
   const [activeSheetIndex, setActiveSheetIndex] = useState(0);
   const [maxPercent, setMaxPercent] = useState(10);
+  const [randomness, setRandomness] = useState(50);
   const [statusMsg, setStatusMsg] = useState('');
   const [isDragging, setIsDragging] = useState(false);
 
-  // Colunas selecionadas pelo usuário para variação
+  // Seleções customizáveis do usuário
   const [selectedColumns, setSelectedColumns] = useState<Set<string>>(new Set());
+  const [selectedSheetsForVariation, setSelectedSheetsForVariation] = useState<Set<string>>(new Set());
 
   const [availableFiles, setAvailableFiles] = useState<{ name: string; path: string }[]>([]);
   const [showFilePicker, setShowFilePicker] = useState(false);
   const [showChart, setShowChart] = useState(true);
+  const [docViewMode, setDocViewMode] = useState<'document' | 'raw'>('document');
+
+  // Modal para Salvar no Servidor (com nome do modelo)
+  const [showSaveServerModal, setShowSaveServerModal] = useState(false);
+  const [saveModelName, setSaveModelName] = useState('');
+  const [savingToServer, setSavingToServer] = useState(false);
+
+  // Modal para Puxar Dados da OS
+  const [showOsModal, setShowOsModal] = useState(false);
+  const [osList, setOsList] = useState<DbOrder[]>([]);
+  const [osSearch, setOsSearch] = useState('');
+  const [loadingOs, setLoadingOs] = useState(false);
 
   const fileInputRef = useRef<HTMLInputElement>(null);
   const workbookRef = useRef<ExcelJS.Workbook | null>(null);
@@ -121,11 +140,16 @@ export const XlsxEditor: React.FC = () => {
     loadAvailableFiles();
   }, []);
 
-  // Atualiza colunas ativas ao trocar de aba ou carregar planilha
+  // Atualiza abas e colunas ativas ao carregar planilha
   useEffect(() => {
-    if (parsedData?.sheets?.[activeSheetIndex]) {
-      const activeSheet = parsedData.sheets[activeSheetIndex];
-      setSelectedColumns(new Set(activeSheet.columnsWithCandidates || []));
+    if (parsedData?.sheets) {
+      if (parsedData.sheets[activeSheetIndex]) {
+        const activeSheet = parsedData.sheets[activeSheetIndex];
+        setSelectedColumns(new Set(activeSheet.columnsWithCandidates || []));
+      }
+      if (selectedSheetsForVariation.size === 0) {
+        setSelectedSheetsForVariation(new Set(parsedData.sheets.map(s => s.name)));
+      }
     }
   }, [activeSheetIndex, parsedData]);
 
@@ -331,12 +355,33 @@ export const XlsxEditor: React.FC = () => {
     setStatusMsg('⏳ Lendo planilha do servidor...');
     setShowFilePicker(false);
     try {
-      const res = await parseXlsx(filePath);
-      setParsedData(res);
-      setActiveSheetIndex(0);
-      setHistoryStack([{ parsedData: res, label: 'Planilha Inicial' }]);
-      setHistoryIndex(0);
-      setStatusMsg(`✅ "${res.fileName}" carregada com SUCESSO.`);
+      const fileName = filePath.split(/[\\/]/).pop() || 'planilha.xlsx';
+      const rawRes = await fetch(`http://localhost:3001/api/xlsx/raw?fileName=${encodeURIComponent(fileName)}`);
+
+      if (rawRes.ok) {
+        const arrayBuffer = await rawRes.arrayBuffer();
+        originalBufferRef.current = arrayBuffer.slice(0);
+
+        const workbook = new ExcelJS.Workbook();
+        await workbook.xlsx.load(arrayBuffer);
+        workbookRef.current = workbook;
+
+        const parsed = parseWorkbookStructure(workbook, fileName, filePath);
+        const clonedInitial = cloneParsedData(parsed);
+        initialParsedDataRef.current = clonedInitial;
+        setParsedData(cloneParsedData(parsed));
+        setActiveSheetIndex(0);
+        setHistoryStack([{ parsedData: clonedInitial, label: 'Planilha Inicial' }]);
+        setHistoryIndex(0);
+        setStatusMsg(`✅ "${fileName}" carregada com SUCESSO (${parsed.sheets.length} páginas, ${parsed.measurementCellsCount} medições).`);
+      } else {
+        const res = await parseXlsx(filePath);
+        setParsedData(res);
+        setActiveSheetIndex(0);
+        setHistoryStack([{ parsedData: res, label: 'Planilha Inicial' }]);
+        setHistoryIndex(0);
+        setStatusMsg(`✅ "${res.fileName}" carregada com SUCESSO.`);
+      }
     } catch (err: any) {
       setStatusMsg(`❌ Erro: ${err?.message || String(err)}`);
     }
@@ -436,7 +481,7 @@ export const XlsxEditor: React.FC = () => {
               }
 
               // Gera medições garantindo que o ERRO TOTAL nunca ultrapasse a tolerância
-              const validMeds = generateValidRowMeasurements(baseVal, currentMeds, maxPercent, selectedIndicesSet, sheetMedia);
+              const validMeds = generateValidRowMeasurements(baseVal, currentMeds, maxPercent, selectedIndicesSet, sheetMedia, randomness, r);
 
               colMap.colMeds.forEach((cIdx, idx) => {
                 if (selectedIndicesSet.has(idx)) {
@@ -635,6 +680,78 @@ export const XlsxEditor: React.FC = () => {
     }
   };
 
+  const handleSaveToServer = async () => {
+    if (!parsedData || !saveModelName.trim()) return;
+    setSavingToServer(true);
+    setStatusMsg('⏳ Salvando modelo no servidor...');
+
+    try {
+      let buffer: Uint8Array | ArrayBuffer;
+      if (originalBufferRef.current && historyStack.length > 0) {
+        buffer = await exportWithChartPreservation();
+      } else if (workbookRef.current) {
+        buffer = await workbookRef.current.xlsx.writeBuffer();
+      } else if (parsedData) {
+        const wb = new ExcelJS.Workbook();
+        parsedData.sheets.forEach((s) => {
+          const ws = wb.addWorksheet(s.name);
+          s.matrix.forEach((row) => {
+            ws.addRow(row.map((c) => c?.value ?? ''));
+          });
+        });
+        buffer = await wb.xlsx.writeBuffer();
+      } else {
+        throw new Error('Nenhum dado de planilha disponível para salvar.');
+      }
+
+      const uint8 = new Uint8Array(buffer);
+      let binary = '';
+      const chunkSize = 8192;
+      for (let i = 0; i < uint8.length; i += chunkSize) {
+        binary += String.fromCharCode.apply(null, uint8.subarray(i, i + chunkSize) as unknown as number[]);
+      }
+      const base64 = btoa(binary);
+
+      const fileName = saveModelName.endsWith('.xlsx') ? saveModelName : `${saveModelName}.xlsx`;
+      const res = await saveXlsxToServer(fileName, base64);
+
+      setStatusMsg(`✅ Modelo "${res.name}" salvo com sucesso no servidor em output/!`);
+      setShowSaveServerModal(false);
+      await loadAvailableFiles();
+    } catch (err: any) {
+      setStatusMsg(`❌ Erro ao salvar no servidor: ${err?.message || String(err)}`);
+    } finally {
+      setSavingToServer(false);
+    }
+  };
+
+  const openOsModal = async () => {
+    setShowOsModal(true);
+    if (osList.length === 0) {
+      setLoadingOs(true);
+      try {
+        const res = await getOrders({ limit: 100 });
+        setOsList(res.items || []);
+      } catch (err: any) {
+        setStatusMsg(`❌ Erro ao buscar Ordens de Serviço: ${err?.message || String(err)}`);
+      } finally {
+        setLoadingOs(false);
+      }
+    }
+  };
+
+  const handleApplyOsSubstitution = (order: DbOrder) => {
+    if (!parsedData) return;
+    try {
+      const result = applyOsSubstitutions(parsedData, order, workbookRef.current);
+      pushHistoryState(result.updatedParsedData, `Substituição OS #${order.id}`);
+      setStatusMsg(`✅ Dados da OS #${order.id} aplicados (${result.replacedCount} campos substituídos: Contratante, Técnico, Nº de Série, Datas e OS)!`);
+      setShowOsModal(false);
+    } catch (err: any) {
+      setStatusMsg(`❌ Erro ao aplicar dados da OS: ${err?.message || String(err)}`);
+    }
+  };
+
   const handleUndo = () => {
     if (historyIndex > 0) {
       const prevIdx = historyIndex - 1;
@@ -749,32 +866,161 @@ export const XlsxEditor: React.FC = () => {
 
         {/* Controls */}
         {parsedData && (
-          <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
-            <div style={{ display: 'flex', alignItems: 'center', gap: '8px', backgroundColor: '#09090b', padding: '4px 10px', borderRadius: '6px', border: '1px solid #27272a' }}>
-              <span style={{ fontSize: '0.78rem', color: '#a1a1aa', fontWeight: '500' }}>±{maxPercent}%</span>
-              <input type="range" min="1" max="25" value={maxPercent} onChange={(e) => setMaxPercent(parseInt(e.target.value, 10))} style={{ width: '70px', accentColor: '#fafafa' }} />
-            </div>
+          <div style={{ display: 'flex', alignItems: 'center', gap: '10px', flexWrap: 'wrap' }}>
+            {activeSheetIndex === 0 ? (
+              /* Controles específicos da 1ª Página (Documento A4) */
+              <div style={{ display: 'flex', alignItems: 'center', gap: '8px', flexWrap: 'wrap' }}>
+                <div style={{
+                  display: 'flex',
+                  alignItems: 'center',
+                  gap: '6px',
+                  backgroundColor: 'rgba(37, 99, 235, 0.15)',
+                  border: '1px solid rgba(37, 99, 235, 0.3)',
+                  padding: '4px 10px',
+                  borderRadius: '6px',
+                  color: '#60a5fa',
+                  fontSize: '0.8rem',
+                  fontWeight: 600
+                }}>
+                  <FileText size={15} /> 1ª Página: Certificado / Laudo
+                </div>
 
-            <button className="btn btn-amber" onClick={handleRandomize}>
-              <Sparkles size={16} /> Variar Medições (±{maxPercent}%)
-            </button>
+                <div style={{ display: 'flex', backgroundColor: '#09090b', padding: '2px', borderRadius: '6px', border: '1px solid #27272a' }}>
+                  <button
+                    className="btn"
+                    style={{
+                      padding: '4px 10px',
+                      fontSize: '0.78rem',
+                      backgroundColor: docViewMode === 'document' ? '#2563eb' : 'transparent',
+                      color: docViewMode === 'document' ? '#ffffff' : '#a1a1aa',
+                      border: 'none',
+                      borderRadius: '4px',
+                      cursor: 'pointer'
+                    }}
+                    onClick={() => setDocViewMode('document')}
+                    title="Visualizar formatado como Laudo / Certificado A4"
+                  >
+                    <FileText size={13} /> Laudo A4
+                  </button>
+                  <button
+                    className="btn"
+                    style={{
+                      padding: '4px 10px',
+                      fontSize: '0.78rem',
+                      backgroundColor: docViewMode === 'raw' ? '#27272a' : 'transparent',
+                      color: docViewMode === 'raw' ? '#ffffff' : '#a1a1aa',
+                      border: 'none',
+                      borderRadius: '4px',
+                      cursor: 'pointer'
+                    }}
+                    onClick={() => setDocViewMode('raw')}
+                    title="Visualizar grade de células original"
+                  >
+                    <Table size={13} /> Grade Bruta
+                  </button>
+                </div>
 
-            <div style={{ display: 'flex', gap: '4px' }}>
-              <button className="btn btn-secondary" style={{ padding: '6px 10px' }} onClick={handleUndo} disabled={historyIndex <= 0} title="Desfazer (Ctrl+Z)">
-                <Undo size={15} /> Desfazer
-              </button>
-              <button className="btn btn-secondary" style={{ padding: '6px 10px' }} onClick={handleRedo} disabled={historyIndex >= historyStack.length - 1} title="Refazer (Ctrl+Y)">
-                <Redo size={15} /> Refazer
-              </button>
-            </div>
+                <button
+                  className="btn btn-secondary"
+                  style={{ backgroundColor: 'rgba(59, 130, 246, 0.15)', borderColor: 'rgba(59, 130, 246, 0.3)', color: '#60a5fa' }}
+                  onClick={openOsModal}
+                  title="Puxar dados de uma OS e preencher Contratante, Técnico, Séries, Datas e OS"
+                >
+                  <ClipboardList size={15} /> Puxar Dados da OS
+                </button>
 
-            <button className="btn btn-secondary" onClick={() => setShowChart(!showChart)} title="Mostrar/ocultar gráfico">
-              <BarChart3 size={16} /> {showChart ? 'Ocultar' : 'Ver'} Gráfico
-            </button>
+                <button
+                  className="btn btn-secondary"
+                  onClick={() => {
+                    setSaveModelName(parsedData.fileName.replace(/\.xlsx$/i, ''));
+                    setShowSaveServerModal(true);
+                  }}
+                  title="Salvar como modelo no disco do servidor"
+                >
+                  <HardDrive size={15} /> Salvar no Servidor
+                </button>
 
-            <button className="btn btn-primary" style={{ backgroundColor: '#10b981', color: '#ffffff' }} onClick={handleExportFile}>
-              <Save size={16} /> Exportar XLSX
-            </button>
+                <button className="btn btn-primary" style={{ backgroundColor: '#10b981', color: '#ffffff' }} onClick={handleExportFile}>
+                  <Download size={15} /> Exportar XLSX
+                </button>
+              </div>
+            ) : (
+              /* Controles de Variação para Abas de Medição (3Hz, 5Hz, etc) */
+              <>
+                {/* Slider 1: Variação % */}
+                <div style={{ display: 'flex', alignItems: 'center', gap: '8px', backgroundColor: '#09090b', padding: '4px 10px', borderRadius: '6px', border: '1px solid #27272a' }}>
+                  <span style={{ fontSize: '0.78rem', color: '#a1a1aa', fontWeight: '500' }}>
+                    Variação: <strong style={{ color: '#ffffff' }}>±{maxPercent}%</strong>
+                  </span>
+                  <input
+                    type="range"
+                    min="1"
+                    max="25"
+                    value={maxPercent}
+                    onChange={(e) => setMaxPercent(parseInt(e.target.value, 10))}
+                    style={{ width: '70px', accentColor: '#3b82f6' }}
+                    title="Porcentagem máxima de variação em torno da base"
+                  />
+                </div>
+
+                {/* Slider 2: Randomização / Dispersão */}
+                <div style={{ display: 'flex', alignItems: 'center', gap: '8px', backgroundColor: '#09090b', padding: '4px 10px', borderRadius: '6px', border: '1px solid #27272a' }}>
+                  <span style={{ fontSize: '0.78rem', color: '#a1a1aa', fontWeight: '500' }}>
+                    Dispersão: <strong style={{ color: '#ffffff' }}>{randomness}%</strong>
+                  </span>
+                  <input
+                    type="range"
+                    min="0"
+                    max="100"
+                    value={randomness}
+                    onChange={(e) => setRandomness(parseInt(e.target.value, 10))}
+                    style={{ width: '70px', accentColor: '#10b981' }}
+                    title="0% = onda suave / harmônica, 100% = dispersão aleatória / ruído"
+                  />
+                </div>
+
+                <button className="btn btn-amber" onClick={handleRandomize}>
+                  <Sparkles size={16} /> Variar Medições
+                </button>
+
+                <div style={{ display: 'flex', gap: '4px' }}>
+                  <button className="btn btn-secondary" style={{ padding: '6px 10px' }} onClick={handleUndo} disabled={historyIndex <= 0} title="Desfazer (Ctrl+Z)">
+                    <Undo size={15} /> Desfazer
+                  </button>
+                  <button className="btn btn-secondary" style={{ padding: '6px 10px' }} onClick={handleRedo} disabled={historyIndex >= historyStack.length - 1} title="Refazer (Ctrl+Y)">
+                    <Redo size={15} /> Refazer
+                  </button>
+                </div>
+
+                <button className="btn btn-secondary" onClick={() => setShowChart(!showChart)} title="Mostrar/ocultar gráfico">
+                  <BarChart3 size={15} /> {showChart ? 'Ocultar' : 'Ver'} Gráfico
+                </button>
+
+                <button
+                  className="btn btn-secondary"
+                  style={{ backgroundColor: 'rgba(59, 130, 246, 0.15)', borderColor: 'rgba(59, 130, 246, 0.3)', color: '#60a5fa' }}
+                  onClick={openOsModal}
+                  title="Puxar dados de uma OS e preencher Contratante, Técnico, Séries, Datas e OS"
+                >
+                  <ClipboardList size={15} /> Puxar OS
+                </button>
+
+                <button
+                  className="btn btn-secondary"
+                  onClick={() => {
+                    setSaveModelName(parsedData.fileName.replace(/\.xlsx$/i, ''));
+                    setShowSaveServerModal(true);
+                  }}
+                  title="Salvar como modelo no disco do servidor"
+                >
+                  <HardDrive size={15} /> Salvar no Servidor
+                </button>
+
+                <button className="btn btn-primary" style={{ backgroundColor: '#10b981', color: '#ffffff' }} onClick={handleExportFile}>
+                  <Download size={15} /> Exportar XLSX
+                </button>
+              </>
+            )}
           </div>
         )}
       </div>
@@ -786,8 +1032,8 @@ export const XlsxEditor: React.FC = () => {
         </div>
       )}
 
-      {/* Column Selection Toolbar */}
-      {activeSheet && columnsWithCandidates.length > 0 && (
+      {/* Column Selection Toolbar (apenas para abas numéricas de medição) */}
+      {activeSheetIndex > 0 && activeSheet && columnsWithCandidates.length > 0 && (
         <div style={{ backgroundColor: '#141417', border: '1px solid #27272a', borderRadius: '6px', padding: '8px 14px', display: 'flex', alignItems: 'center', gap: '12px', flexWrap: 'wrap' }}>
           <span style={{ fontSize: '0.78rem', color: '#a1a1aa', fontWeight: '600', display: 'flex', alignItems: 'center', gap: '6px' }}>
             <Filter size={14} color="#fbbf24" /> Seleção de Colunas para Variação:
@@ -850,85 +1096,110 @@ export const XlsxEditor: React.FC = () => {
       ) : (
         <div style={{ flex: 1, display: 'flex', flexDirection: 'column', backgroundColor: '#18181b', border: '1px solid #27272a', borderRadius: '8px', overflow: 'hidden' }}>
           
-          {/* Table Grid (Google Sheets style) */}
-          <div style={{ flex: 1, overflow: 'auto', padding: '0' }}>
-            {activeSheet && (
-              <div className="table-container" style={{ border: 'none', borderRadius: '0' }}>
-                <table>
-                  <thead>
-                    <tr>
-                      <th style={{ width: '45px', textAlign: 'center', backgroundColor: '#09090b', color: '#71717a', borderRight: '1px solid #27272a' }}>#</th>
-                      {Array.from({ length: activeSheet.colCount }).map((_, c) => {
-                        const letter = getColLetter(c + 1);
-                        const isColActive = selectedColumns.has(letter);
-                        return (
-                          <th key={c} style={{
-                            textAlign: 'center',
-                            minWidth: '95px',
-                            backgroundColor: isColActive ? 'rgba(245, 158, 11, 0.08)' : '#09090b',
-                            color: isColActive ? '#fbbf24' : '#a1a1aa',
-                            borderRight: '1px solid #27272a'
-                          }}>
-                            {letter}
-                          </th>
-                        );
-                      })}
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {activeSheet.matrix.slice(0, 45).map((row, rIdx) => (
-                      <tr key={rIdx}>
-                        <td style={{ textAlign: 'center', fontWeight: '600', color: '#71717a', backgroundColor: '#09090b', borderRight: '1px solid #27272a', borderBottom: '1px solid #27272a' }}>
-                          {rIdx + 1}
-                        </td>
-                        {row.map((cell, cIdx) => {
-                          const isColActive = cell ? selectedColumns.has(cell.colLetter) : false;
-                          const isTargetCell = cell?.isNumeric && cell?.isSelectedForVariation && isColActive;
-
-                          return (
-                            <td
-                              key={cIdx}
-                              onClick={() => toggleCellSelection(activeSheetIndex, rIdx, cIdx)}
-                              style={{
-                                backgroundColor: isTargetCell ? 'rgba(245, 158, 11, 0.15)' : 'transparent',
-                                color: isTargetCell ? '#fbbf24' : '#f4f4f5',
-                                fontWeight: isTargetCell ? '600' : '400',
-                                borderRight: '1px solid #27272a',
-                                borderBottom: '1px solid #27272a',
-                                fontSize: '0.81rem',
-                                padding: '7px 12px',
-                                cursor: cell?.isNumeric ? 'pointer' : 'default'
-                              }}
-                              title={cell?.isNumeric ? 'Clique para marcar/desmarcar variação desta célula' : undefined}
-                            >
-                              {cell?.displayValue || ''}
-                            </td>
-                          );
-                        })}
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-              </div>
-            )}
-          </div>
-
-          {/* Chart Preview — 40% da tela, centralizado */}
-          {showChart && activeSheet && (
-            <div style={{
-              padding: '16px 12px',
-              borderTop: '1px solid #27272a',
-              display: 'flex',
-              justifyContent: 'center',
-              width: '100%',
-              backgroundColor: '#09090b'
-            }}>
-              <div style={{ width: '40%', minWidth: '380px', maxWidth: '100%' }}>
-                <MeasurementChart
-                  sheetData={activeSheet}
-                  frequencyLabel={activeSheet.name}
+          {/* VISUALIZAÇÃO: DOCUMENTO A4 vs GRADE COM GRÁFICO SIDE-BY-SIDE */}
+          {activeSheetIndex === 0 && docViewMode === 'document' ? (
+            /* Modo Documento A4 Human-Readable para a 1ª Página */
+            <div style={{ flex: 1, overflowY: 'auto', padding: '20px 24px', backgroundColor: '#09090b', width: '100%', display: 'flex', justifyContent: 'center' }}>
+              {activeSheet && (
+                <ReportDocumentView
+                  sheet={activeSheet}
+                  workbookRef={workbookRef.current}
+                  onCellChange={(addr, val) => {
+                    if (activeSheet && activeSheet.cells[addr]) {
+                      activeSheet.cells[addr].displayValue = val;
+                      activeSheet.cells[addr].value = val;
+                    }
+                  }}
                 />
+              )}
+            </div>
+          ) : (
+            /* Side-by-Side: Tabela à Esquerda (altura cheia) e Gráfico à Direita */
+            <div style={{ flex: 1, display: 'flex', flexDirection: 'row', overflow: 'hidden' }}>
+              <div style={{
+                flex: showChart && activeSheetIndex > 0 ? '1 1 58%' : '1 1 100%',
+                overflow: 'auto',
+                borderRight: showChart && activeSheetIndex > 0 ? '1px solid #27272a' : 'none',
+                height: '100%'
+              }}>
+                {activeSheet && (
+                  <div className="table-container" style={{ border: 'none', borderRadius: '0' }}>
+                    <table>
+                      <thead>
+                        <tr>
+                          <th style={{ width: '45px', textAlign: 'center', backgroundColor: '#09090b', color: '#71717a', borderRight: '1px solid #27272a' }}>#</th>
+                          {Array.from({ length: activeSheet.colCount }).map((_, c) => {
+                            const letter = getColLetter(c + 1);
+                            const isColActive = selectedColumns.has(letter);
+                            return (
+                              <th key={c} style={{
+                                textAlign: 'center',
+                                minWidth: '95px',
+                                backgroundColor: isColActive ? 'rgba(245, 158, 11, 0.08)' : '#09090b',
+                                color: isColActive ? '#fbbf24' : '#a1a1aa',
+                                borderRight: '1px solid #27272a'
+                              }}>
+                                {letter}
+                              </th>
+                            );
+                          })}
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {activeSheet.matrix.slice(0, Math.min(activeSheet.matrix.length, 60)).map((row, rIdx) => (
+                          <tr key={rIdx}>
+                            <td style={{ textAlign: 'center', fontWeight: '600', color: '#71717a', backgroundColor: '#09090b', borderRight: '1px solid #27272a', borderBottom: '1px solid #27272a' }}>
+                              {rIdx + 1}
+                            </td>
+                            {row.map((cell, cIdx) => {
+                              const isColActive = cell ? selectedColumns.has(cell.colLetter) : false;
+                              const isTargetCell = cell?.isNumeric && cell?.isSelectedForVariation && isColActive;
+
+                              return (
+                                <td
+                                  key={cIdx}
+                                  onClick={() => toggleCellSelection(activeSheetIndex, rIdx, cIdx)}
+                                  style={{
+                                    backgroundColor: isTargetCell ? 'rgba(245, 158, 11, 0.15)' : 'transparent',
+                                    color: isTargetCell ? '#fbbf24' : '#f4f4f5',
+                                    fontWeight: isTargetCell ? '600' : '400',
+                                    borderRight: '1px solid #27272a',
+                                    borderBottom: '1px solid #27272a',
+                                    fontSize: '0.81rem',
+                                    padding: '7px 12px',
+                                    cursor: cell?.isNumeric ? 'pointer' : 'default'
+                                  }}
+                                  title={cell?.isNumeric ? 'Clique para marcar/desmarcar variação desta célula' : undefined}
+                                >
+                                  {cell?.displayValue || ''}
+                                </td>
+                              );
+                            })}
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                )}
               </div>
+
+              {/* Painel do Gráfico à Direita (apenas em abas de medição > 0) */}
+              {activeSheetIndex > 0 && showChart && activeSheet && (
+                <div style={{
+                  flex: '0 0 42%',
+                  display: 'flex',
+                  flexDirection: 'column',
+                  backgroundColor: '#09090b',
+                  overflowY: 'auto',
+                  padding: '16px',
+                  boxSizing: 'border-box'
+                }}>
+                  <MeasurementChart
+                    sheetData={activeSheet}
+                    frequencyLabel={activeSheet.name}
+                  />
+                </div>
+              )}
             </div>
           )}
 
@@ -943,13 +1214,276 @@ export const XlsxEditor: React.FC = () => {
                 key={sheet.name}
                 onClick={() => setActiveSheetIndex(idx)}
                 className={`sheet-tab-item ${activeSheetIndex === idx ? 'active' : ''}`}
+                style={{
+                  display: 'flex',
+                  alignItems: 'center',
+                  gap: '6px',
+                  borderBottom: activeSheetIndex === idx ? (idx === 0 ? '2px solid #2563eb' : '2px solid #fbbf24') : 'none'
+                }}
               >
-                <span>📄</span>
-                <span>{sheet.name}</span>
+                <span>{idx === 0 ? '📄' : '📊'}</span>
+                <span>{idx === 0 ? `${sheet.name} (Laudo A4)` : sheet.name}</span>
               </div>
             ))}
           </div>
 
+        </div>
+      )}
+
+      {/* Modal: Salvar Modelo no Servidor (em disco) */}
+      {showSaveServerModal && (
+        <div style={{
+          position: 'fixed',
+          top: 0, left: 0, right: 0, bottom: 0,
+          backgroundColor: 'rgba(0, 0, 0, 0.75)',
+          display: 'flex',
+          alignItems: 'center',
+          justifyContent: 'center',
+          zIndex: 1000,
+          backdropFilter: 'blur(4px)'
+        }}>
+          <div style={{
+            backgroundColor: '#18181b',
+            border: '1px solid #3f3f46',
+            borderRadius: '12px',
+            padding: '24px',
+            width: '460px',
+            maxWidth: '92%',
+            boxShadow: '0 20px 25px -5px rgba(0, 0, 0, 0.5), 0 8px 10px -6px rgba(0, 0, 0, 0.5)'
+          }}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '16px' }}>
+              <h3 style={{ margin: 0, fontSize: '1.1rem', fontWeight: 600, color: '#f4f4f5', display: 'flex', alignItems: 'center', gap: '8px' }}>
+                <HardDrive size={18} color="#3b82f6" /> Salvar Modelo no Servidor
+              </h3>
+              <button
+                onClick={() => setShowSaveServerModal(false)}
+                style={{ background: 'transparent', border: 'none', color: '#a1a1aa', cursor: 'pointer' }}
+              >
+                <X size={18} />
+              </button>
+            </div>
+
+            <p style={{ fontSize: '0.84rem', color: '#a1a1aa', marginBottom: '16px', lineHeight: 1.5 }}>
+              O modelo será gravado em disco no servidor (pasta <code>output/</code>) com todas as fórmulas, dados e gráficos intactos.
+            </p>
+
+            <div style={{ marginBottom: '20px' }}>
+              <label style={{ display: 'block', fontSize: '0.8rem', fontWeight: 500, color: '#d4d4d8', marginBottom: '6px' }}>
+                Nome do Modelo / Arquivo:
+              </label>
+              <input
+                type="text"
+                value={saveModelName}
+                onChange={(e) => setSaveModelName(e.target.value)}
+                placeholder="ex: modelo_calibracao_v1"
+                style={{
+                  width: '100%',
+                  padding: '10px 12px',
+                  backgroundColor: '#09090b',
+                  border: '1px solid #3f3f46',
+                  borderRadius: '6px',
+                  color: '#f4f4f5',
+                  fontSize: '0.9rem',
+                  outline: 'none',
+                  boxSizing: 'border-box'
+                }}
+                onKeyDown={(e) => { if (e.key === 'Enter') handleSaveToServer(); }}
+                onFocus={(e) => e.target.select()}
+                autoFocus
+              />
+              <span style={{ fontSize: '0.75rem', color: '#71717a', marginTop: '4px', display: 'block' }}>
+                Extensão <code>.xlsx</code> será adicionada automaticamente se omitida.
+              </span>
+            </div>
+
+            <div style={{ display: 'flex', justifyContent: 'flex-end', gap: '10px' }}>
+              <button
+                className="btn btn-secondary"
+                onClick={() => setShowSaveServerModal(false)}
+                disabled={savingToServer}
+              >
+                Cancelar
+              </button>
+              <button
+                className="btn btn-primary"
+                style={{ backgroundColor: '#2563eb' }}
+                onClick={handleSaveToServer}
+                disabled={savingToServer || !saveModelName.trim()}
+              >
+                {savingToServer ? 'Gravando em disco...' : 'Salvar no Servidor'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Modal: Puxar Dados da OS */}
+      {showOsModal && (
+        <div style={{
+          position: 'fixed',
+          top: 0, left: 0, right: 0, bottom: 0,
+          backgroundColor: 'rgba(0, 0, 0, 0.75)',
+          display: 'flex',
+          alignItems: 'center',
+          justifyContent: 'center',
+          zIndex: 1000,
+          backdropFilter: 'blur(4px)'
+        }}>
+          <div style={{
+            backgroundColor: '#18181b',
+            border: '1px solid #3f3f46',
+            borderRadius: '12px',
+            padding: '24px',
+            width: '760px',
+            maxWidth: '95%',
+            maxHeight: '85vh',
+            display: 'flex',
+            flexDirection: 'column',
+            boxShadow: '0 20px 25px -5px rgba(0, 0, 0, 0.5)'
+          }}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '16px' }}>
+              <h3 style={{ margin: 0, fontSize: '1.1rem', fontWeight: 600, color: '#f4f4f5', display: 'flex', alignItems: 'center', gap: '8px' }}>
+                <ClipboardList size={18} color="#60a5fa" /> Puxar Dados de Ordem de Serviço (OS)
+              </h3>
+              <button
+                onClick={() => setShowOsModal(false)}
+                style={{ background: 'transparent', border: 'none', color: '#a1a1aa', cursor: 'pointer' }}
+              >
+                <X size={18} />
+              </button>
+            </div>
+
+            <p style={{ fontSize: '0.84rem', color: '#a1a1aa', marginBottom: '14px', lineHeight: 1.4 }}>
+              Selecione uma Ordem de Serviço cadastrada no sistema. O sistema substituirá automaticamente os dados de:
+              <strong style={{ color: '#e4e4e7' }}> Contratante, Laboratório e Técnico, Números de Série, Datas e Ordens de Serviço</strong>.
+            </p>
+
+            {/* Campo de Busca */}
+            <div style={{ position: 'relative', marginBottom: '14px' }}>
+              <Search size={15} style={{ position: 'absolute', left: '12px', top: '50%', transform: 'translateY(-50%)', color: '#71717a' }} />
+              <input
+                type="text"
+                value={osSearch}
+                onChange={(e) => setOsSearch(e.target.value)}
+                placeholder="Buscar por número da OS, cliente, equipamento ou técnico..."
+                style={{
+                  width: '100%',
+                  padding: '9px 12px 9px 36px',
+                  backgroundColor: '#09090b',
+                  border: '1px solid #3f3f46',
+                  borderRadius: '6px',
+                  color: '#f4f4f5',
+                  fontSize: '0.85rem',
+                  outline: 'none',
+                  boxSizing: 'border-box'
+                }}
+              />
+            </div>
+
+            {/* Lista de Ordens de Serviço */}
+            <div style={{ flex: 1, overflowY: 'auto', display: 'flex', flexDirection: 'column', gap: '8px', paddingRight: '4px' }}>
+              {loadingOs ? (
+                <div style={{ textAlign: 'center', padding: '30px', color: '#a1a1aa', fontSize: '0.9rem' }}>
+                  ⏳ Carregando Ordens de Serviço do banco de dados...
+                </div>
+              ) : osList.length === 0 ? (
+                <div style={{ textAlign: 'center', padding: '30px', color: '#71717a', fontSize: '0.85rem' }}>
+                  Nenhuma Ordem de Serviço encontrada no banco de dados. Execute o Scraper para coletar OSs.
+                </div>
+              ) : (
+                osList
+                  .filter((os) => {
+                    if (!osSearch.trim()) return true;
+                    const q = osSearch.toLowerCase();
+                    return (
+                      String(os.id).toLowerCase().includes(q) ||
+                      (os.cliente_nome && os.cliente_nome.toLowerCase().includes(q)) ||
+                      (os.equipamento_modelo && os.equipamento_modelo.toLowerCase().includes(q)) ||
+                      (os.tecnico_responsavel && os.tecnico_responsavel.toLowerCase().includes(q)) ||
+                      (os.equipamento_codigo && os.equipamento_codigo.toLowerCase().includes(q))
+                    );
+                  })
+                  .map((os) => (
+                    <div
+                      key={os.id}
+                      style={{
+                        backgroundColor: '#09090b',
+                        border: '1px solid #27272a',
+                        borderRadius: '8px',
+                        padding: '12px 14px',
+                        display: 'flex',
+                        alignItems: 'center',
+                        justifyContent: 'space-between',
+                        gap: '12px',
+                        transition: 'border-color 0.2s',
+                        cursor: 'pointer'
+                      }}
+                      onMouseEnter={(e) => { (e.currentTarget as HTMLElement).style.borderColor = '#3b82f6'; }}
+                      onMouseLeave={(e) => { (e.currentTarget as HTMLElement).style.borderColor = '#27272a'; }}
+                      onClick={() => handleApplyOsSubstitution(os)}
+                    >
+                      <div style={{ display: 'flex', flexDirection: 'column', gap: '4px', flex: 1, overflow: 'hidden' }}>
+                        <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                          <span style={{ fontWeight: 700, color: '#60a5fa', fontSize: '0.9rem' }}>
+                            OS #{os.id}
+                          </span>
+                          {os.situacao && (
+                            <span style={{
+                              fontSize: '0.72rem',
+                              padding: '2px 8px',
+                              borderRadius: '4px',
+                              backgroundColor: 'rgba(59, 130, 246, 0.1)',
+                              color: '#93c5fd',
+                              fontWeight: 500
+                            }}>
+                              {os.situacao}
+                            </span>
+                          )}
+                          {os.data_entrada && (
+                            <span style={{ fontSize: '0.75rem', color: '#71717a' }}>
+                              Entrada: {os.data_entrada}
+                            </span>
+                          )}
+                        </div>
+
+                        <div style={{ fontSize: '0.84rem', color: '#f4f4f5', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
+                          <strong style={{ color: '#a1a1aa' }}>Cliente: </strong>
+                          {os.cliente_nome || 'Não informado'}
+                        </div>
+
+                        <div style={{ fontSize: '0.78rem', color: '#a1a1aa', display: 'flex', gap: '12px', flexWrap: 'wrap' }}>
+                          <span>
+                            <strong>Equipamento: </strong>
+                            {os.equipamento_modelo || 'Laser UroPulse'} {os.equipamento_codigo ? `(S/N: ${os.equipamento_codigo})` : ''}
+                          </span>
+                          <span>
+                            <strong>Técnico: </strong>
+                            {os.tecnico_responsavel || 'Roberto Aldilei Favoreto'}
+                          </span>
+                        </div>
+                      </div>
+
+                      <button
+                        className="btn btn-primary"
+                        style={{ padding: '6px 14px', fontSize: '0.78rem', whiteSpace: 'nowrap', backgroundColor: '#2563eb' }}
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          handleApplyOsSubstitution(os);
+                        }}
+                      >
+                        <Check size={14} /> Aplicar nesta Planilha
+                      </button>
+                    </div>
+                  ))
+              )}
+            </div>
+
+            <div style={{ display: 'flex', justifyContent: 'flex-end', marginTop: '16px', paddingTop: '12px', borderTop: '1px solid #27272a' }}>
+              <button className="btn btn-secondary" onClick={() => setShowOsModal(false)}>
+                Fechar
+              </button>
+            </div>
+          </div>
         </div>
       )}
     </div>

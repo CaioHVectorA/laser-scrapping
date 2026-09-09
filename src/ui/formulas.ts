@@ -278,20 +278,48 @@ export function applyFormulasToMatrix(
   }
 }
 
+export type VariationMode = 'uniform' | 'wobble' | 'gaussian' | 'trend';
+
+export interface CustomLayoutPreset {
+  name: string;
+  colBase: number;
+  colTolMax: number;
+  colTolMin: number;
+  colErroTotal1: number;
+  colMedia: number;
+  colMeds: number[];
+  colErro: number;
+  colErroTotal2: number;
+  colDesvPadrao: number;
+}
+
+export const DEFAULT_MEDLASER_PRESET: CustomLayoutPreset = {
+  name: 'Padrão MedLaser (Colunas A, D, E, F..J, K, M)',
+  colBase: 1,       // A
+  colTolMax: 2,     // B
+  colTolMin: 3,     // C
+  colErroTotal1: 4, // D
+  colMedia: 5,      // E
+  colMeds: [6, 7, 8, 9, 10], // F..J
+  colErro: 11,      // K
+  colErroTotal2: 12,// L
+  colDesvPadrao: 13 // M
+};
+
 /**
  * Gera medições variadas para uma linha de ensaio garantindo que o
  * ERRO TOTAL resultante (D = K + Q) NUNCA ultrapasse os limites de tolerância:
  *   Tol. Min <= ERRO TOTAL <= tol Max
- * Onde:
- *   tol Max = +20% do valor base (+base * 0.20)
- *   Tol. Min = -20% do valor base (-base * 0.20)
+ * Suporta modos de variação: 'uniform', 'wobble', 'gaussian', 'trend'
  */
 export function generateValidRowMeasurements(
   baseVal: number,
   currentMeds: number[],
   maxPercent: number,
   selectedIndicesSet?: Set<number>,
-  sheetMedia?: number
+  sheetMedia?: number,
+  randomnessOrMode: number | VariationMode = 50,
+  rowIndex: number = 0
 ): number[] {
   const n = currentMeds.length || 5;
   const tolMax = baseVal * 0.20;
@@ -303,15 +331,39 @@ export function generateValidRowMeasurements(
   let bestMeds = [...currentMeds];
   let bestDistanceToCenter = Infinity;
 
-  // 1. Tenta gerar por perturbação estocástica das medições atuais
-  for (let attempt = 0; attempt < 200; attempt++) {
+  let numRandomness = 50;
+  if (typeof randomnessOrMode === 'number') {
+    numRandomness = randomnessOrMode;
+  } else if (randomnessOrMode === 'wobble') {
+    numRandomness = 25;
+  } else if (randomnessOrMode === 'gaussian') {
+    numRandomness = 75;
+  } else if (randomnessOrMode === 'trend') {
+    numRandomness = 15;
+  } else {
+    numRandomness = 50;
+  }
+
+  // randRatio: 0 = variação suave e contínua; 1 = variação estocástica/dispersa
+  const randRatio = Math.max(0, Math.min(100, numRandomness)) / 100;
+
+  // Fator de perturbação balanceado entre suavidade e dispersão
+  const getNoiseFactor = (idx: number, attempt: number): number => {
+    const sineWave = Math.sin((rowIndex + 1) * 0.85 + (idx + 1) * 1.25 + attempt * 0.08);
+    const noise = (Math.random() * 2 - 1);
+    const factor = sineWave * (1 - randRatio) + noise * randRatio;
+    return Math.max(-1, Math.min(1, factor));
+  };
+
+  // 1. Tenta gerar por perturbação estocástica com base no modo
+  for (let attempt = 0; attempt < 250; attempt++) {
     const candidateMeds = currentMeds.map((val, idx) => {
       if (selectedIndicesSet && !selectedIndicesSet.has(idx)) {
         return val;
       }
       const deltaMax = Math.abs(val) * (maxPercent / 100);
-      const randomFactor = Math.random() * 2 - 1; // [-1.0, +1.0]
-      const delta = randomFactor * deltaMax;
+      const factor = getNoiseFactor(idx, attempt);
+      const delta = factor * deltaMax;
       return Math.round((val + delta) * 100) / 100;
     });
 
@@ -335,7 +387,7 @@ export function generateValidRowMeasurements(
     return bestMeds;
   }
 
-  // 2. Fallback determinístico
+  // 2. Fallback determinístico caso limites não sejam atingidos de primeira
   const randomTargetErrorRatio = (Math.random() * 1.2 - 0.6);
   const targetErroTotal = tolMax * randomTargetErrorRatio;
   const targetMedia = sheetMedia ?? (baseVal - targetErroTotal + 0.20);
@@ -344,11 +396,15 @@ export function generateValidRowMeasurements(
     if (selectedIndicesSet && !selectedIndicesSet.has(idx)) {
       return currentMeds[idx] ?? Math.round(targetMedia * 100) / 100;
     }
-    const dispersion = (Math.random() * 2 - 1) * (baseVal * 0.015);
+    const waveFactor = (100 - numRandomness) / 100;
+    const wave = Math.sin(idx * 1.2 + rowIndex) * 0.01 * waveFactor;
+    const randFactor = numRandomness / 100;
+    const dispersion = ((Math.random() * 2 - 1) * 0.015 * randFactor + wave) * baseVal;
     return Math.round((targetMedia + dispersion) * 100) / 100;
   });
 
   return syntheticMeds;
 }
+
 
 

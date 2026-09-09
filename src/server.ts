@@ -1,6 +1,8 @@
 import { config } from './config.js';
 import { runScraper } from './scraper.js';
 import { saveToDatabase } from './db.js';
+import { exportToExcel } from './excel.js';
+import { exportToCsv } from './csv.js';
 import { parseXlsx, randomizeMeasurements, updateCellValues } from './services/xlsxService.js';
 
 declare const Bun: any;
@@ -156,17 +158,28 @@ async function handleRequest(req: Request): Promise<Response> {
     // Run async, respond immediately
     (async () => {
       try {
-        pushLog('🚀 Iniciando automação...');
+        pushLog('🚀 Iniciando automação MedLaser (Scraper, SQLite, CSV & Excel)...');
         const items = await runScraper({ url: config.targetUrl, headless });
 
         if (items.length > 0) {
           pushLog(`🗄️ Salvando ${items.length} registros no banco SQLite...`);
-          await saveToDatabase(items, config.dbFilePath);
+          const dbCount = saveToDatabase(items, config.dbFilePath);
+          pushLog(`✅ ${dbCount} registros salvos/atualizados na tabela 'ordens_servico'.`);
+
+          pushLog('📄 Gerando arquivo CSV com dados completos...');
+          const csvPath = await exportToCsv(items, config.csvOutputFilePath);
+          pushLog(`💾 CSV salvo com sucesso em: ${csvPath}`);
+
+          pushLog('📊 Gerando planilha Excel (.xlsx)...');
+          const excelPath = await exportToExcel(items, config.outputFilePath);
+          pushLog(`💾 Planilha Excel salva com sucesso em: ${excelPath}`);
+        } else {
+          pushLog('⚠️ Nenhum registro encontrado na raspagem.');
         }
 
-        pushLog(`✅ Concluído! ${items.length} registros.`);
+        pushLog(`🎉 Automação concluída com sucesso! Total: ${items.length} OSs processadas.`);
       } catch (err: any) {
-        pushLog(`❌ Erro: ${err.message}`);
+        pushLog(`❌ Erro na automação: ${err.message}`);
       } finally {
         scraperRunning = false;
         console.log = origLog;
@@ -205,7 +218,7 @@ async function handleRequest(req: Request): Promise<Response> {
   }
 
   // ── Scraper: status ──
-  if (path === '/api/scraper/status' && req.method === 'GET') {
+  if (path === '/api/scraper/status' && (req.method === 'GET' || req.method === 'HEAD')) {
     return jsonResponse({ running: scraperRunning, progress: scraperProgress, logCount: scraperLogs.length });
   }
 
@@ -231,6 +244,62 @@ async function handleRequest(req: Request): Promise<Response> {
         body.targetAddresses
       );
       return jsonResponse(result);
+    } catch (err: any) {
+      return errorResponse(err.message);
+    }
+  }
+
+  // ── XLSX: save to server (disk in output/) ──
+  if (path === '/api/xlsx/save' && req.method === 'POST') {
+    try {
+      const body = await req.json();
+      const { fileName, fileBase64 } = body;
+      if (!fileName || !fileBase64) {
+        return errorResponse('Nome do modelo/arquivo e dados são obrigatórios', 400);
+      }
+      const fs = await import('node:fs');
+      const pathMod = await import('node:path');
+      const outputDir = pathMod.dirname(config.outputFilePath);
+      if (!fs.existsSync(outputDir)) {
+        fs.mkdirSync(outputDir, { recursive: true });
+      }
+      let cleanName = fileName.replace(/[\\/:*?"<>|]/g, '_').trim();
+      if (!cleanName.endsWith('.xlsx') && !cleanName.endsWith('.xls')) {
+        cleanName += '.xlsx';
+      }
+      const targetPath = pathMod.join(outputDir, cleanName);
+      const buffer = Buffer.from(fileBase64, 'base64');
+      fs.writeFileSync(targetPath, buffer);
+      return jsonResponse({
+        success: true,
+        name: cleanName,
+        path: targetPath,
+        size: buffer.length
+      });
+    } catch (err: any) {
+      return errorResponse(err.message);
+    }
+  }
+
+  // ── XLSX: get raw file bytes from output/ ──
+  if (path === '/api/xlsx/raw' && (req.method === 'GET' || req.method === 'HEAD')) {
+    try {
+      const fileName = url.searchParams.get('fileName') || url.searchParams.get('file');
+      if (!fileName) return errorResponse('Nome do arquivo é obrigatório', 400);
+      const fs = await import('node:fs');
+      const pathMod = await import('node:path');
+      const outputDir = pathMod.dirname(config.outputFilePath);
+      const cleanName = pathMod.basename(fileName);
+      const filePath = pathMod.join(outputDir, cleanName);
+      if (!fs.existsSync(filePath)) return errorResponse('Arquivo não encontrado', 404);
+      const fileBuffer = fs.readFileSync(filePath);
+      return new Response(fileBuffer, {
+        headers: {
+          'Content-Type': 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+          'Content-Disposition': `attachment; filename="${cleanName}"`,
+          ...corsHeaders,
+        },
+      });
     } catch (err: any) {
       return errorResponse(err.message);
     }
