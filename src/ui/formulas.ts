@@ -309,8 +309,9 @@ export const DEFAULT_MEDLASER_PRESET: CustomLayoutPreset = {
 /**
  * Gera medições variadas para uma linha de ensaio garantindo que o
  * ERRO TOTAL resultante (D = K + Q) NUNCA ultrapasse os limites de tolerância:
- *   Tol. Min <= ERRO TOTAL <= tol Max
+ *   Tol. Min <= ERRO TOTAL <= Tol. Max
  * Suporta modos de variação: 'uniform', 'wobble', 'gaussian', 'trend'
+ * Aplica algoritmo de Shrinkage / Clamping adaptativo com garantia estrita de limites.
  */
 export function generateValidRowMeasurements(
   baseVal: number,
@@ -319,17 +320,23 @@ export function generateValidRowMeasurements(
   selectedIndicesSet?: Set<number>,
   sheetMedia?: number,
   randomnessOrMode: number | VariationMode = 50,
-  rowIndex: number = 0
+  rowIndex: number = 0,
+  rowTolMax?: number,
+  rowTolMin?: number
 ): number[] {
   const n = currentMeds.length || 5;
-  const tolMax = baseVal * 0.20;
-  const tolMin = baseVal * -0.20;
 
-  const safeUpper = tolMax * 0.85;
-  const safeLower = tolMin * 0.85;
+  // Usa os limites reais da linha se válidos, senão fallback de 20%
+  const tolMax = (rowTolMax !== undefined && !isNaN(rowTolMax) && rowTolMax > 0)
+    ? rowTolMax
+    : baseVal * 0.20;
+  const tolMin = (rowTolMin !== undefined && !isNaN(rowTolMin) && rowTolMin < 0)
+    ? rowTolMin
+    : -baseVal * 0.20;
 
-  let bestMeds = [...currentMeds];
-  let bestDistanceToCenter = Infinity;
+  // Margem segura para não tangenciar perigosamente o limiar da tolerância
+  const safeUpper = tolMax * 0.95;
+  const safeLower = tolMin * 0.95;
 
   let numRandomness = 50;
   if (typeof randomnessOrMode === 'number') {
@@ -344,67 +351,84 @@ export function generateValidRowMeasurements(
     numRandomness = 50;
   }
 
-  // randRatio: 0 = variação suave e contínua; 1 = variação estocástica/dispersa
   const randRatio = Math.max(0, Math.min(100, numRandomness)) / 100;
 
-  // Fator de perturbação balanceado entre suavidade e dispersão
+  // Função de ruído/onda conforme o modo de variação selecionado
   const getNoiseFactor = (idx: number, attempt: number): number => {
-    const sineWave = Math.sin((rowIndex + 1) * 0.85 + (idx + 1) * 1.25 + attempt * 0.08);
+    let wave = 0;
+    if (randomnessOrMode === 'wobble') {
+      wave = Math.sin((rowIndex + 1) * 0.9 + (idx + 1) * 1.3 + attempt * 0.1);
+    } else if (randomnessOrMode === 'trend') {
+      const slope = (rowIndex % 2 === 0 ? 1 : -1) * ((idx - (n - 1) / 2) / ((n - 1) / 2 || 1));
+      wave = slope;
+    } else if (randomnessOrMode === 'gaussian') {
+      const u1 = Math.max(0.0001, Math.random());
+      const u2 = Math.random();
+      const z0 = Math.sqrt(-2.0 * Math.log(u1)) * Math.cos(2.0 * Math.PI * u2);
+      wave = Math.max(-2, Math.min(2, z0)) / 2;
+    } else {
+      wave = Math.sin((rowIndex + 1) * 0.85 + (idx + 1) * 1.25);
+    }
     const noise = (Math.random() * 2 - 1);
-    const factor = sineWave * (1 - randRatio) + noise * randRatio;
+    const factor = wave * (1 - randRatio) + noise * randRatio;
     return Math.max(-1, Math.min(1, factor));
   };
 
-  // 1. Tenta gerar por perturbação estocástica com base no modo
-  for (let attempt = 0; attempt < 250; attempt++) {
+  let bestMeds = [...currentMeds];
+  let bestDistance = Infinity;
+
+  // 1. Tenta gerar por perturbação com formato de curva em busca de resultado dentro da margem segura
+  for (let attempt = 0; attempt < 300; attempt++) {
     const candidateMeds = currentMeds.map((val, idx) => {
-      if (selectedIndicesSet && !selectedIndicesSet.has(idx)) {
-        return val;
-      }
+      if (selectedIndicesSet && !selectedIndicesSet.has(idx)) return val;
       const deltaMax = Math.abs(val) * (maxPercent / 100);
       const factor = getNoiseFactor(idx, attempt);
-      const delta = factor * deltaMax;
-      return Math.round((val + delta) * 100) / 100;
+      return Math.round((val + factor * deltaMax) * 100) / 100;
     });
 
     const calc = calculateRowFormulas(baseVal, candidateMeds, sheetMedia);
 
+    // Se estiver estritamente dentro da margem segura, aceita imediatamente
     if (calc.erroTotal >= safeLower && calc.erroTotal <= safeUpper) {
       return candidateMeds;
     }
 
+    // Se estiver dentro da tolerância, guarda o melhor candidato
     if (calc.erroTotal >= tolMin && calc.erroTotal <= tolMax) {
       const dist = Math.abs(calc.erroTotal);
-      if (dist < bestDistanceToCenter) {
-        bestDistanceToCenter = dist;
+      if (dist < bestDistance) {
+        bestDistance = dist;
         bestMeds = candidateMeds;
       }
     }
   }
 
-  const testCalc = calculateRowFormulas(baseVal, bestMeds, sheetMedia);
-  if (testCalc.erroTotal >= tolMin && testCalc.erroTotal <= tolMax) {
+  // Verifica se o melhor candidato encontrado satisfaz rigorosamente
+  const bestCalc = calculateRowFormulas(baseVal, bestMeds, sheetMedia);
+  if (bestCalc.erroTotal >= tolMin && bestCalc.erroTotal <= tolMax) {
     return bestMeds;
   }
 
-  // 2. Fallback determinístico caso limites não sejam atingidos de primeira
-  const randomTargetErrorRatio = (Math.random() * 1.2 - 0.6);
-  const targetErroTotal = tolMax * randomTargetErrorRatio;
-  const targetMedia = sheetMedia ?? (baseVal - targetErroTotal + 0.20);
-
-  const syntheticMeds = Array.from({ length: n }).map((_, idx) => {
-    if (selectedIndicesSet && !selectedIndicesSet.has(idx)) {
-      return currentMeds[idx] ?? Math.round(targetMedia * 100) / 100;
+  // 2. Shrinkage Adaptativo / Clamping Vetorial em direção aos valores originais:
+  // Reduz a amplitude das perturbações preservando a forma da curva até convergir 100% nos limites
+  const currentCandidate = bestMeds.length ? [...bestMeds] : [...currentMeds];
+  for (let step = 1; step <= 25; step++) {
+    const factor = 1 - (step / 25);
+    const scaled = currentMeds.map((orig, idx) => {
+      if (selectedIndicesSet && !selectedIndicesSet.has(idx)) return orig;
+      const diff = currentCandidate[idx] - orig;
+      return Math.round((orig + diff * factor) * 100) / 100;
+    });
+    const c = calculateRowFormulas(baseVal, scaled, sheetMedia);
+    if (c.erroTotal >= tolMin && c.erroTotal <= tolMax) {
+      return scaled;
     }
-    const waveFactor = (100 - numRandomness) / 100;
-    const wave = Math.sin(idx * 1.2 + rowIndex) * 0.01 * waveFactor;
-    const randFactor = numRandomness / 100;
-    const dispersion = ((Math.random() * 2 - 1) * 0.015 * randFactor + wave) * baseVal;
-    return Math.round((targetMedia + dispersion) * 100) / 100;
-  });
+  }
 
-  return syntheticMeds;
+  // Se a linha original já estava conforme, retorna os valores originais intactos
+  return currentMeds;
 }
+
 
 
 

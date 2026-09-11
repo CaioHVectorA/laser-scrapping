@@ -480,8 +480,36 @@ export const XlsxEditor: React.FC = () => {
                 if (!isNaN(v) && v > 0) sheetMedia = v;
               }
 
+              let rowTolMax: number | undefined = undefined;
+              if (colMap.colTolMax > 0 && row[colMap.colTolMax - 1]) {
+                const tCell = row[colMap.colTolMax - 1];
+                const v = typeof tCell?.value === 'number'
+                  ? tCell.value
+                  : parseFloat(String(tCell?.displayValue || '').replace(',', '.'));
+                if (!isNaN(v) && v > 0) rowTolMax = v;
+              }
+
+              let rowTolMin: number | undefined = undefined;
+              if (colMap.colTolMin > 0 && row[colMap.colTolMin - 1]) {
+                const tCell = row[colMap.colTolMin - 1];
+                const v = typeof tCell?.value === 'number'
+                  ? tCell.value
+                  : parseFloat(String(tCell?.displayValue || '').replace(',', '.'));
+                if (!isNaN(v) && v < 0) rowTolMin = v;
+              }
+
               // Gera medições garantindo que o ERRO TOTAL nunca ultrapasse a tolerância
-              const validMeds = generateValidRowMeasurements(baseVal, currentMeds, maxPercent, selectedIndicesSet, sheetMedia, randomness, r);
+              const validMeds = generateValidRowMeasurements(
+                baseVal,
+                currentMeds,
+                maxPercent,
+                selectedIndicesSet,
+                sheetMedia,
+                randomness,
+                r,
+                rowTolMax,
+                rowTolMin
+              );
 
               colMap.colMeds.forEach((cIdx, idx) => {
                 if (selectedIndicesSet.has(idx)) {

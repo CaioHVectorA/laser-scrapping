@@ -25,29 +25,52 @@ async function startBackend() {
     }
   } catch {}
 
-  const serverPath = path.join(projectRoot, 'src', 'server.ts');
-  console.log(`🚀 Starting Bun backend: ${serverPath}`);
-
+  const isPackaged = app.isPackaged;
   const isWin = process.platform === 'win32';
   const userDir = process.env.USERPROFILE || process.env.HOME || '';
   const winBun = path.join(userDir, '.bun', 'bin', 'bun.exe');
   const unixBun = path.join(userDir, '.bun', 'bin', 'bun');
 
-  let bunCmd = 'bun';
-  if (process.env.BUN_PATH) {
-    bunCmd = process.env.BUN_PATH;
-  } else if (isWin && fs.existsSync(winBun)) {
-    bunCmd = winBun;
-  } else if (!isWin && fs.existsSync(unixBun)) {
-    bunCmd = unixBun;
+  let serverCmd = 'bun';
+  let serverArgs: string[] = [];
+  const serverEnv: Record<string, string> = { ...process.env, PORT: String(BACKEND_PORT) } as any;
+
+  if (isPackaged) {
+    const candidatePaths = [
+      path.join(process.resourcesPath, 'dist', 'server', 'server.js'),
+      path.join(process.resourcesPath, 'server.js'),
+      path.join(__dirname, '../server/server.js'),
+      path.join(app.getAppPath(), 'dist', 'server', 'server.js'),
+    ];
+    const foundServer = candidatePaths.find(p => fs.existsSync(p));
+    if (foundServer) {
+      console.log(`📦 Running packaged server: ${foundServer}`);
+      serverCmd = process.execPath;
+      serverArgs = [foundServer];
+      serverEnv.ELECTRON_RUN_AS_NODE = '1';
+    } else {
+      console.warn('⚠️ Packaged server.js not found in expected paths');
+    }
+  } else {
+    const serverPath = path.join(projectRoot, 'src', 'server.ts');
+    console.log(`🚀 Starting development backend: ${serverPath}`);
+    serverArgs = [serverPath];
+
+    if (process.env.BUN_PATH) {
+      serverCmd = process.env.BUN_PATH;
+    } else if (isWin && fs.existsSync(winBun)) {
+      serverCmd = winBun;
+    } else if (!isWin && fs.existsSync(unixBun)) {
+      serverCmd = unixBun;
+    }
   }
 
   try {
-    backendProcess = spawn(bunCmd, [serverPath], {
-      cwd: projectRoot,
-      env: { ...process.env, PORT: String(BACKEND_PORT) },
+    backendProcess = spawn(serverCmd, serverArgs, {
+      cwd: isPackaged ? app.getPath('userData') : projectRoot,
+      env: serverEnv,
       stdio: ['ignore', 'pipe', 'pipe'],
-      shell: isWin,
+      shell: isWin && !isPackaged,
     });
 
     backendProcess.stdout?.on('data', (data: Buffer) => {

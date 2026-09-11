@@ -24,7 +24,10 @@ import {
   Waves,
   Printer,
   Settings2,
-  FolderOpen
+  FolderOpen,
+  Plus,
+  X,
+  Columns
 } from 'lucide-react';
 
 import { parseXlsx, listXlsxFiles, randomizeXlsx } from '../api.js';
@@ -96,6 +99,56 @@ export const OperationPanel: React.FC = () => {
   const [activeViewTab, setActiveViewTab] = useState<'editor' | 'report_pdf' | 'preset_config'>('editor');
   const [customPreset, setCustomPreset] = useState<CustomLayoutPreset>(DEFAULT_MEDLASER_PRESET);
   const [showPresetModal, setShowPresetModal] = useState(false);
+  const [showColumnModal, setShowColumnModal] = useState(false);
+  const [manualColInput, setManualColInput] = useState('');
+
+  // Identifica todas as colunas que possuem dados numéricos ou cabeçalhos nas abas de medição
+  const getAvailableDataColumns = (): { letter: string; colIdx: number; headerName: string; count: number }[] => {
+    if (!parsedData?.sheets) return [];
+    const sheetsToScan = parsedData.sheets.filter((_, idx) => idx > 0 || parsedData.sheets.length === 1);
+    const colStats: Record<string, { letter: string; colIdx: number; headerName: string; count: number }> = {};
+
+    sheetsToScan.forEach(sheet => {
+      // Procura linha de cabeçalho
+      const headerRow = sheet.matrix.slice(0, 15).find(row =>
+        row.some(cell => cell && /^(base|tol|med1|erro)/i.test(String(cell.displayValue || cell.value || '')))
+      );
+
+      for (let c = 1; c <= Math.min(sheet.colCount, 26); c++) {
+        const letter = getColLetter(c);
+        let headerText = '';
+        if (headerRow && headerRow[c - 1]) {
+          headerText = String(headerRow[c - 1]?.displayValue || headerRow[c - 1]?.value || '').trim();
+        }
+
+        let numCount = 0;
+        for (let r = 0; r < sheet.matrix.length; r++) {
+          const cell = sheet.matrix[r]?.[c - 1];
+          if (cell && cell.isNumeric && cell.value !== '' && cell.value !== null) {
+            numCount++;
+          }
+        }
+
+        if (numCount > 0 || headerText) {
+          if (!colStats[letter]) {
+            colStats[letter] = {
+              letter,
+              colIdx: c,
+              headerName: headerText,
+              count: numCount
+            };
+          } else {
+            colStats[letter].count += numCount;
+            if (!colStats[letter].headerName && headerText) {
+              colStats[letter].headerName = headerText;
+            }
+          }
+        }
+      }
+    });
+
+    return Object.values(colStats).sort((a, b) => a.colIdx - b.colIdx);
+  };
 
   // ── Storage State ──
   const [recents, setRecents] = useState<RecentItem[]>([]);
@@ -467,6 +520,24 @@ export const OperationPanel: React.FC = () => {
               if (!isNaN(v) && v > 0) sheetMedia = v;
             }
 
+            let rowTolMax: number | undefined = undefined;
+            if (colMap.colTolMax > 0 && row[colMap.colTolMax - 1]) {
+              const tCell = row[colMap.colTolMax - 1];
+              const v = typeof tCell?.value === 'number'
+                ? tCell.value
+                : parseFloat(String(tCell?.displayValue || '').replace(',', '.'));
+              if (!isNaN(v) && v > 0) rowTolMax = v;
+            }
+
+            let rowTolMin: number | undefined = undefined;
+            if (colMap.colTolMin > 0 && row[colMap.colTolMin - 1]) {
+              const tCell = row[colMap.colTolMin - 1];
+              const v = typeof tCell?.value === 'number'
+                ? tCell.value
+                : parseFloat(String(tCell?.displayValue || '').replace(',', '.'));
+              if (!isNaN(v) && v < 0) rowTolMin = v;
+            }
+
             const validMeds = generateValidRowMeasurements(
               baseVal,
               currentMeds,
@@ -474,7 +545,9 @@ export const OperationPanel: React.FC = () => {
               selectedIndicesSet,
               sheetMedia,
               variationMode,
-              r
+              r,
+              rowTolMax,
+              rowTolMin
             );
 
             colMap.colMeds.forEach((cIdx, idx) => {
@@ -852,40 +925,47 @@ export const OperationPanel: React.FC = () => {
             </div>
 
             {/* Column Selector Checkboxes */}
-            {candidateCols.length > 0 && (
-              <div>
-                <span style={{ fontSize: '0.78rem', color: '#a1a1aa', fontWeight: '700', display: 'flex', alignItems: 'center', gap: '6px', marginBottom: '8px' }}>
-                  <Filter size={14} color="#fbbf24" /> 2. Escolher Colunas de Medição para Variar:
+            <div>
+              <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '8px', flexWrap: 'wrap', gap: '8px' }}>
+                <span style={{ fontSize: '0.78rem', color: '#a1a1aa', fontWeight: '700', display: 'flex', alignItems: 'center', gap: '6px' }}>
+                  <Filter size={14} color="#fbbf24" /> 2. Colunas Selecionadas para Variar ({selectedColumnsForVariation.size}):
                 </span>
-                <div style={{ display: 'flex', gap: '6px', flexWrap: 'wrap' }}>
-                  {candidateCols.map((colLetter) => {
-                    const isChecked = selectedColumnsForVariation.has(colLetter);
-                    return (
-                      <button
-                        key={colLetter}
-                        onClick={() => toggleColumnForVariation(colLetter)}
-                        style={{
-                          backgroundColor: isChecked ? 'rgba(245, 158, 11, 0.2)' : '#18181b',
-                          color: isChecked ? '#fbbf24' : '#a1a1aa',
-                          border: `1px solid ${isChecked ? '#f59e0b' : '#27272a'}`,
-                          borderRadius: '4px',
-                          padding: '4px 10px',
-                          fontSize: '0.78rem',
-                          fontWeight: isChecked ? '700' : '400',
-                          cursor: 'pointer',
-                          display: 'flex',
-                          alignItems: 'center',
-                          gap: '4px'
-                        }}
-                      >
-                        {isChecked ? <CheckSquare size={13} /> : <Square size={13} />}
-                        Coluna {colLetter}
-                      </button>
-                    );
-                  })}
-                </div>
+                <button
+                  className="btn btn-secondary"
+                  style={{ padding: '4px 10px', fontSize: '0.75rem', display: 'flex', alignItems: 'center', gap: '5px', backgroundColor: '#27272a' }}
+                  onClick={() => setShowColumnModal(true)}
+                >
+                  <SlidersHorizontal size={13} color="#fbbf24" /> Gerenciar / Adicionar Mais Colunas...
+                </button>
               </div>
-            )}
+              <div style={{ display: 'flex', gap: '6px', flexWrap: 'wrap' }}>
+                {Array.from(selectedColumnsForVariation).sort().map((colLetter) => {
+                  return (
+                    <button
+                      key={colLetter}
+                      onClick={() => toggleColumnForVariation(colLetter)}
+                      style={{
+                        backgroundColor: 'rgba(245, 158, 11, 0.2)',
+                        color: '#fbbf24',
+                        border: '1px solid #f59e0b',
+                        borderRadius: '4px',
+                        padding: '4px 10px',
+                        fontSize: '0.78rem',
+                        fontWeight: '700',
+                        cursor: 'pointer',
+                        display: 'flex',
+                        alignItems: 'center',
+                        gap: '4px'
+                      }}
+                      title="Clique para desmarcar esta coluna"
+                    >
+                      <CheckSquare size={13} />
+                      Coluna {colLetter}
+                    </button>
+                  );
+                })}
+              </div>
+            </div>
 
             {/* Mode & Noise Control */}
             <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', flexWrap: 'wrap', gap: '12px', borderTop: '1px solid #27272a', paddingTop: '10px' }}>
@@ -1044,6 +1124,134 @@ export const OperationPanel: React.FC = () => {
               )}
             </div>
           )}
+        </div>
+      )}
+
+      {/* POPUP MODAL: Gerenciador de Colunas de Variação */}
+      {showColumnModal && (
+        <div className="modal-overlay" onClick={() => setShowColumnModal(false)}>
+          <div className="modal-card" style={{ maxWidth: '640px', width: '92%' }} onClick={(e) => e.stopPropagation()}>
+            <div className="modal-header" style={{ borderBottom: '2px solid #f59e0b' }}>
+              <h3 style={{ display: 'flex', alignItems: 'center', gap: '8px', fontSize: '1.05rem', color: '#ffffff' }}>
+                <Columns size={18} color="#fbbf24" /> Gerenciar Colunas de Variação
+              </h3>
+              <button className="btn btn-secondary" style={{ padding: '3px 8px', fontSize: '0.75rem' }} onClick={() => setShowColumnModal(false)}>
+                <X size={14} />
+              </button>
+            </div>
+
+            <div className="modal-body" style={{ gap: '14px', maxHeight: '65vh', overflowY: 'auto' }}>
+              <p style={{ fontSize: '0.82rem', color: '#a1a1aa', margin: 0 }}>
+                Selecione as colunas da planilha onde deseja aplicar a variação de curva ou adicione novas colunas conforme os dados detectados:
+              </p>
+
+              {/* Botões de Ação Rápida */}
+              <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap' }}>
+                <button
+                  className="btn btn-secondary"
+                  style={{ fontSize: '0.75rem', padding: '4px 10px' }}
+                  onClick={() => {
+                    const next = new Set<string>();
+                    ['F', 'G', 'H', 'I', 'J'].forEach(c => next.add(c));
+                    setSelectedColumnsForVariation(next);
+                  }}
+                >
+                  Padrão (F..J / med1..med5)
+                </button>
+                <button
+                  className="btn btn-secondary"
+                  style={{ fontSize: '0.75rem', padding: '4px 10px' }}
+                  onClick={() => {
+                    const allDataCols = getAvailableDataColumns().map(c => c.letter);
+                    setSelectedColumnsForVariation(new Set(allDataCols));
+                  }}
+                >
+                  Marcar Todas com Dados
+                </button>
+                <button
+                  className="btn btn-secondary"
+                  style={{ fontSize: '0.75rem', padding: '4px 10px' }}
+                  onClick={() => setSelectedColumnsForVariation(new Set())}
+                >
+                  Desmarcar Todas
+                </button>
+              </div>
+
+              {/* Grid de Colunas Detectadas com Dados */}
+              <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(130px, 1fr))', gap: '8px' }}>
+                {getAvailableDataColumns().map((col) => {
+                  const isChecked = selectedColumnsForVariation.has(col.letter);
+                  return (
+                    <div
+                      key={col.letter}
+                      onClick={() => toggleColumnForVariation(col.letter)}
+                      style={{
+                        backgroundColor: isChecked ? 'rgba(245, 158, 11, 0.15)' : '#09090b',
+                        border: `1px solid ${isChecked ? '#f59e0b' : '#27272a'}`,
+                        borderRadius: '6px',
+                        padding: '8px 10px',
+                        cursor: 'pointer',
+                        display: 'flex',
+                        flexDirection: 'column',
+                        gap: '4px',
+                        transition: 'all 0.15s ease'
+                      }}
+                    >
+                      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+                        <span style={{ fontWeight: '700', color: isChecked ? '#fbbf24' : '#ffffff', fontSize: '0.85rem' }}>
+                          Col. {col.letter}
+                        </span>
+                        {isChecked ? <CheckSquare size={15} color="#fbbf24" /> : <Square size={15} color="#71717a" />}
+                      </div>
+                      <span style={{ fontSize: '0.73rem', color: '#a1a1aa', textOverflow: 'ellipsis', overflow: 'hidden', whiteSpace: 'nowrap' }}>
+                        {col.headerName ? col.headerName : `Índice ${col.colIdx}`}
+                      </span>
+                      <span style={{ fontSize: '0.68rem', color: '#71717a' }}>
+                        {col.count} valores
+                      </span>
+                    </div>
+                  );
+                })}
+              </div>
+
+              {/* Seção para Adicionar Coluna Manual */}
+              <div style={{ borderTop: '1px solid #27272a', paddingTop: '12px', display: 'flex', alignItems: 'center', gap: '8px' }}>
+                <span style={{ fontSize: '0.78rem', color: '#a1a1aa' }}>Adicionar Coluna Específica:</span>
+                <input
+                  type="text"
+                  maxLength={3}
+                  placeholder="Ex: K"
+                  value={manualColInput}
+                  onChange={(e) => setManualColInput(e.target.value.toUpperCase())}
+                  style={{ width: '60px', backgroundColor: '#09090b', border: '1px solid #27272a', borderRadius: '4px', padding: '4px 8px', color: '#ffffff', fontSize: '0.82rem', textAlign: 'center' }}
+                />
+                <button
+                  className="btn btn-primary"
+                  style={{ padding: '4px 10px', fontSize: '0.75rem', display: 'flex', alignItems: 'center', gap: '4px' }}
+                  onClick={() => {
+                    const col = manualColInput.trim().toUpperCase();
+                    if (/^[A-Z]+$/.test(col)) {
+                      const next = new Set(selectedColumnsForVariation);
+                      next.add(col);
+                      setSelectedColumnsForVariation(next);
+                      setManualColInput('');
+                    }
+                  }}
+                >
+                  <Plus size={14} /> Adicionar
+                </button>
+              </div>
+            </div>
+
+            <div className="modal-footer" style={{ borderTop: '1px solid #27272a' }}>
+              <span style={{ fontSize: '0.78rem', color: '#a1a1aa', marginRight: 'auto' }}>
+                Total selecionado: <strong>{selectedColumnsForVariation.size}</strong> colunas
+              </span>
+              <button className="btn btn-primary" onClick={() => setShowColumnModal(false)}>
+                Concluir
+              </button>
+            </div>
+          </div>
         </div>
       )}
     </div>

@@ -240,7 +240,35 @@ export async function randomizeMeasurements(
           if (!isNaN(v) && v > 0) sheetMedia = v;
         }
 
-        const validMeds = generateValidRowMeasurements(baseVal, currentMeds, maxPercent, undefined, sheetMedia);
+        let rowTolMax: number | undefined = undefined;
+        if (colMap.colTolMax > 0 && row[colMap.colTolMax - 1]) {
+          const tCell = row[colMap.colTolMax - 1];
+          const v = typeof tCell?.value === 'number'
+            ? tCell.value
+            : parseFloat(String(tCell?.displayValue || '').replace(',', '.'));
+          if (!isNaN(v) && v > 0) rowTolMax = v;
+        }
+
+        let rowTolMin: number | undefined = undefined;
+        if (colMap.colTolMin > 0 && row[colMap.colTolMin - 1]) {
+          const tCell = row[colMap.colTolMin - 1];
+          const v = typeof tCell?.value === 'number'
+            ? tCell.value
+            : parseFloat(String(tCell?.displayValue || '').replace(',', '.'));
+          if (!isNaN(v) && v < 0) rowTolMin = v;
+        }
+
+        const validMeds = generateValidRowMeasurements(
+          baseVal,
+          currentMeds,
+          maxPercent,
+          undefined,
+          sheetMedia,
+          50,
+          r,
+          rowTolMax,
+          rowTolMin
+        );
 
         colMap.colMeds.forEach((cIdx, idx) => {
           const cell = row[cIdx - 1];

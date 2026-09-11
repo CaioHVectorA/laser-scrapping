@@ -13,10 +13,51 @@
     "dev:renderer": "vite",
     "build:renderer": "vite build",
     "build:electron": "tsc -p tsconfig.electron.json",
+    "build:server": "bun build src/server.ts --outfile dist/server/server.js --target bun --packages external",
     "build": "bun run build:renderer && bun run build:electron",
+    "build:all": "bun run build:renderer && bun run build:electron && bun run build:server",
     "app": "bun run build:electron && concurrently \"bun src/server.ts\" \"vite\" \"cross-env ELECTRON_DEV_URL=http://localhost:5173 npx electron .\"",
     "app:headed": "bun run build:electron && concurrently \"bun src/server.ts\" \"vite\" \"cross-env ELECTRON_DEV_URL=http://localhost:5173 HEADLESS=false npx electron .\"",
-    "check": "tsc --noEmit"
+    "check": "tsc --noEmit",
+    "test": "bun test",
+    "dist:win": "bun run build:all && node ./node_modules/electron-builder/cli.js --win --x64",
+    "dist": "bun run build:all && node ./node_modules/electron-builder/cli.js",
+    "pack": "bun run build:all && node ./node_modules/electron-builder/cli.js --dir"
+  },
+  "build": {
+    "appId": "com.medlaser.laserwidget",
+    "productName": "LaserWidget",
+    "directories": {
+      "output": "release"
+    },
+    "files": [
+      "dist/**/*",
+      "templates/**/*",
+      "package.json"
+    ],
+    "win": {
+      "target": [
+        {
+          "target": "nsis",
+          "arch": [
+            "x64"
+          ]
+        },
+        {
+          "target": "portable",
+          "arch": [
+            "x64"
+          ]
+        }
+      ]
+    },
+    "nsis": {
+      "oneClick": false,
+      "allowToChangeInstallationDirectory": true,
+      "createDesktopShortcut": true,
+      "createStartMenuShortcut": true,
+      "shortcutName": "LaserWidget"
+    }
   },
   "keywords": [
     "scraping",
@@ -47,6 +88,7 @@
     "concurrently": "^10.0.5",
     "cross-env": "^10.1.0",
     "electron": "^43.4.1",
+    "electron-builder": "^25.1.8",
     "tsx": "^4.19.3",
     "typescript": "^5.7.3",
     "vite": "^8.2.2"
