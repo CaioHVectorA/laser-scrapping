@@ -213,6 +213,13 @@ export async function runScraper(options: ScraperOptions): Promise<ScrapedItem[]
         try {
           const item = await scrapePrintPage(page, group.printPageId, id, group.tabName);
           scrapedItems.push(item);
+          if (options.onItemScraped) {
+            try {
+              await Promise.resolve(options.onItemScraped(item));
+            } catch (saveErr) {
+              console.warn(`⚠️ Erro ao salvar OS #${id} incrementalmente:`, saveErr);
+            }
+          }
         } catch (err) {
           console.error(`❌ Erro ao extrair folha de impressão da OS #${id}:`, err);
         }

@@ -1,3 +1,7 @@
+import http from 'node:http';
+import fs from 'node:fs';
+import path from 'node:path';
+import { createRequire } from 'node:module';
 import { config } from './config.js';
 import { runScraper } from './scraper.js';
 import { saveToDatabase } from './db.js';
@@ -5,20 +9,91 @@ import { exportToExcel } from './excel.js';
 import { exportToCsv } from './csv.js';
 import { parseXlsx, randomizeMeasurements, updateCellValues } from './services/xlsxService.js';
 
-declare const Bun: any;
+const require = createRequire(import.meta.url);
 
-const PORT = 3001;
+process.on('uncaughtException', (err) => {
+  console.error('❌ Uncaught Exception protegida no backend:', err);
+});
+process.on('unhandledRejection', (reason) => {
+  console.error('❌ Unhandled Rejection protegida no backend:', reason);
+});
+
+const PORT = parseInt(process.env.PORT || '3001', 10);
 
 // ─── SQLite Helper ──────────────────────────────────────────────────────
 let db: any = null;
 
 function getDb() {
   if (db) return db;
-  const packageName = 'bun:sqlite';
-  // Dynamic import workaround for tsc
-  const sqliteModule = require(packageName);
-  db = new sqliteModule.Database(config.dbFilePath);
-  db.exec('PRAGMA journal_mode = WAL;');
+
+  const dbDir = path.dirname(config.dbFilePath);
+  if (!fs.existsSync(dbDir)) {
+    fs.mkdirSync(dbDir, { recursive: true });
+  }
+
+  const isBun = typeof (globalThis as any).Bun !== 'undefined' || !!(process as any).versions?.bun;
+  let rawDb: any = null;
+
+  if (isBun) {
+    try {
+      const packageName = 'bun:sqlite';
+      const sqliteModule = require(packageName);
+      rawDb = new sqliteModule.Database(config.dbFilePath);
+    } catch {}
+  }
+
+  if (!rawDb) {
+    const { DatabaseSync } = require('node:sqlite');
+    rawDb = new DatabaseSync(config.dbFilePath);
+  }
+
+  rawDb.exec('PRAGMA journal_mode = WAL;');
+
+  // Garante a tabela ordens_servico no primeiro uso para evitar erro antes da raspagem
+  rawDb.exec(`
+    CREATE TABLE IF NOT EXISTS ordens_servico (
+      id TEXT PRIMARY KEY,
+      situacao TEXT,
+      data_entrada TEXT,
+      cliente_nome TEXT,
+      cliente_cpf_cnpj TEXT,
+      cliente_endereco TEXT,
+      cliente_telefones TEXT,
+      cliente_email TEXT,
+      equipamento_modelo TEXT,
+      equipamento_codigo TEXT,
+      equipamento_linha_uso TEXT,
+      equipamento_dimensoes TEXT,
+      equipamento_descricao TEXT,
+      equipamento_acessorios TEXT,
+      servico_tipo TEXT,
+      tecnico_responsavel TEXT,
+      descricao_problema TEXT,
+      valor_orcamento REAL,
+      observacoes TEXT,
+      laudo_tecnico TEXT,
+      scraped_at TEXT
+    );
+  `);
+
+  if (typeof rawDb.query === 'function') {
+    db = rawDb;
+  } else {
+    db = {
+      exec: (sql: string) => rawDb.exec(sql),
+      prepare: (sql: string) => rawDb.prepare(sql),
+      query: (sql: string) => {
+        const stmt = rawDb.prepare(sql);
+        return {
+          get: (...params: any[]) => stmt.get(...params),
+          all: (...params: any[]) => stmt.all(...params),
+          run: (...params: any[]) => stmt.run(...params),
+        };
+      },
+      close: () => rawDb.close?.(),
+    };
+  }
+
   return db;
 }
 
@@ -48,8 +123,12 @@ const sseClients: Set<ReadableStreamDefaultController> = new Set();
 
 function broadcastSSE(event: string, data: any) {
   const msg = `event: ${event}\ndata: ${JSON.stringify(data)}\n\n`;
-  for (const ctrl of sseClients) {
-    try { ctrl.enqueue(new TextEncoder().encode(msg)); } catch { sseClients.delete(ctrl); }
+  for (const ctrl of Array.from(sseClients)) {
+    try {
+      ctrl.enqueue(new TextEncoder().encode(msg));
+    } catch {
+      sseClients.delete(ctrl);
+    }
   }
 }
 
@@ -159,11 +238,21 @@ async function handleRequest(req: Request): Promise<Response> {
     (async () => {
       try {
         pushLog('🚀 Iniciando automação MedLaser (Scraper, SQLite, CSV & Excel)...');
-        const items = await runScraper({ url: config.targetUrl, headless });
+        const items = await runScraper({
+          url: config.targetUrl,
+          headless,
+          onItemScraped: async (item) => {
+            try {
+              await saveToDatabase([item], config.dbFilePath);
+            } catch (saveErr) {
+              console.warn('Erro ao salvar item incrementalmente:', saveErr);
+            }
+          }
+        });
 
         if (items.length > 0) {
           pushLog(`🗄️ Salvando ${items.length} registros no banco SQLite...`);
-          const dbCount = saveToDatabase(items, config.dbFilePath);
+          const dbCount = await saveToDatabase(items, config.dbFilePath);
           pushLog(`✅ ${dbCount} registros salvos/atualizados na tabela 'ordens_servico'.`);
 
           pushLog('📄 Gerando arquivo CSV com dados completos...');
@@ -193,17 +282,25 @@ async function handleRequest(req: Request): Promise<Response> {
 
   // ── Scraper: SSE stream ──
   if (path === '/api/scraper/stream' && req.method === 'GET') {
+    let activeCtrl: ReadableStreamDefaultController | null = null;
     const stream = new ReadableStream({
       start(controller) {
+        activeCtrl = controller;
         sseClients.add(controller);
         // Send existing logs
         for (const msg of scraperLogs) {
-          controller.enqueue(new TextEncoder().encode(`event: log\ndata: ${JSON.stringify({ message: msg })}\n\n`));
+          try {
+            controller.enqueue(new TextEncoder().encode(`event: log\ndata: ${JSON.stringify({ message: msg })}\n\n`));
+          } catch {}
         }
-        controller.enqueue(new TextEncoder().encode(`event: progress\ndata: ${JSON.stringify(scraperProgress)}\n\n`));
+        try {
+          controller.enqueue(new TextEncoder().encode(`event: progress\ndata: ${JSON.stringify(scraperProgress)}\n\n`));
+        } catch {}
       },
-      cancel(controller) {
-        sseClients.delete(controller);
+      cancel() {
+        if (activeCtrl) {
+          sseClients.delete(activeCtrl);
+        }
       }
     });
 
@@ -308,14 +405,15 @@ async function handleRequest(req: Request): Promise<Response> {
   // ── XLSX: list files in output/ ──
   if (path === '/api/xlsx/files' && req.method === 'GET') {
     try {
-      const fs = await import('node:fs');
-      const pathMod = await import('node:path');
-      const outputDir = pathMod.dirname(config.outputFilePath);
+      const outputDir = path.dirname(config.outputFilePath);
+      if (!fs.existsSync(outputDir)) {
+        return jsonResponse([]);
+      }
       const files = fs.readdirSync(outputDir)
         .filter((f: string) => f.endsWith('.xlsx') || f.endsWith('.xls'))
         .map((f: string) => ({
           name: f,
-          path: pathMod.resolve(outputDir, f),
+          path: path.resolve(outputDir, f),
         }));
       return jsonResponse(files);
     } catch (err: any) {
@@ -326,13 +424,99 @@ async function handleRequest(req: Request): Promise<Response> {
   return errorResponse('Not found', 404);
 }
 
+// ─── Node.js HTTP Server Adapter ─────────────────────────────────────────
+function startNodeServer(port: number, handler: (req: Request) => Promise<Response>) {
+  const server = http.createServer(async (req, res) => {
+    try {
+      const host = req.headers.host || `localhost:${port}`;
+      const url = `http://${host}${req.url || '/'}`;
+
+      const headers = new Headers();
+      for (const [key, value] of Object.entries(req.headers)) {
+        if (Array.isArray(value)) {
+          for (const v of value) headers.append(key, v);
+        } else if (value !== undefined) {
+          headers.set(key, value);
+        }
+      }
+
+      const init: RequestInit = {
+        method: req.method,
+        headers,
+      };
+
+      if (req.method !== 'GET' && req.method !== 'HEAD') {
+        init.body = req as any;
+        (init as any).duplex = 'half';
+      }
+
+      const webRequest = new Request(url, init);
+      const webResponse = await handler(webRequest);
+
+      res.statusCode = webResponse.status;
+      webResponse.headers.forEach((val, key) => {
+        res.setHeader(key, val);
+      });
+
+      if (webResponse.headers.get('content-type')?.includes('text/event-stream')) {
+        res.flushHeaders();
+      }
+
+      if (webResponse.body) {
+        const reader = webResponse.body.getReader();
+        let isClosed = false;
+
+        req.on('close', () => {
+          isClosed = true;
+          reader.cancel().catch(() => {});
+        });
+
+        try {
+          while (true) {
+            const { done, value } = await reader.read();
+            if (done || isClosed) break;
+            res.write(value);
+          }
+        } catch {
+          // Stream cancelada ou conexão encerrada pelo cliente
+        } finally {
+          try {
+            reader.releaseLock();
+          } catch {}
+          if (!res.writableEnded) {
+            res.end();
+          }
+        }
+      } else {
+        res.end();
+      }
+    } catch (err: any) {
+      console.error('❌ Erro no handler HTTP:', err);
+      if (!res.headersSent) {
+        res.statusCode = 500;
+        res.setHeader('Content-Type', 'application/json');
+        res.end(JSON.stringify({ error: err.message || String(err) }));
+      }
+    }
+  });
+
+  server.listen(port, () => {
+    console.log(`✅ Servidor LaserWidget rodando via Node em http://localhost:${port}`);
+  });
+
+  return server;
+}
+
 // ─── Start server ───────────────────────────────────────────────────────
 console.log(`🚀 LaserWidget API Server starting on http://localhost:${PORT}`);
 console.log(`🗄️  SQLite: ${config.dbFilePath}`);
 
-Bun.serve({
-  port: PORT,
-  fetch: handleRequest,
-});
-
-console.log(`✅ Servidor LaserWidget rodando em http://localhost:${PORT}`);
+if (typeof (globalThis as any).Bun !== 'undefined' && (globalThis as any).Bun?.serve) {
+  (globalThis as any).Bun.serve({
+    port: PORT,
+    fetch: handleRequest,
+  });
+  console.log(`✅ Servidor LaserWidget rodando via Bun em http://localhost:${PORT}`);
+} else {
+  startNodeServer(PORT, handleRequest);
+}

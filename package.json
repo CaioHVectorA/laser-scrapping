@@ -13,7 +13,7 @@
     "dev:renderer": "vite",
     "build:renderer": "vite build",
     "build:electron": "tsc -p tsconfig.electron.json",
-    "build:server": "bun build src/server.ts --outfile dist/server/server.js --target bun --packages external",
+    "build:server": "bun build src/server.ts --outfile dist/server/server.js --target node --packages external",
     "build": "bun run build:renderer && bun run build:electron",
     "build:all": "bun run build:renderer && bun run build:electron && bun run build:server",
     "app": "bun run build:electron && concurrently \"bun src/server.ts\" \"vite\" \"cross-env ELECTRON_DEV_URL=http://localhost:5173 npx electron .\"",
@@ -33,7 +33,14 @@
     "files": [
       "dist/**/*",
       "templates/**/*",
-      "package.json"
+      "package.json",
+      ".env"
+    ],
+    "extraResources": [
+      {
+        "from": ".env",
+        "to": ".env"
+      }
     ],
     "win": {
       "target": [

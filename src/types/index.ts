@@ -42,4 +42,5 @@ export interface ScraperOptions {
   headless: boolean;
   timeoutMs?: number;
   maxItems?: number;
+  onItemScraped?: (item: ScrapedItem) => Promise<void> | void;
 }

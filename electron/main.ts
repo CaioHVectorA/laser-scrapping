@@ -9,13 +9,15 @@ const projectRoot = path.resolve(__dirname, '../..');
 
 let mainWindow: BrowserWindow | null = null;
 let backendProcess: ChildProcess | null = null;
+let isQuitting = false;
 
 const BACKEND_PORT = 3001;
 const BACKEND_URL = `http://localhost:${BACKEND_PORT}`;
 
 import fs from 'node:fs';
+import dotenv from 'dotenv';
 
-// ─── Start Bun API Server as child process ──────────────────────────────
+// ─── Start Bun/Node API Server as child process ─────────────────────────
 async function startBackend() {
   try {
     const check = await fetch(`${BACKEND_URL}/api/scraper/status`);
@@ -27,13 +29,46 @@ async function startBackend() {
 
   const isPackaged = app.isPackaged;
   const isWin = process.platform === 'win32';
+  const userDataDir = app.getPath('userData');
+
+  // Carrega configurações do .env a partir de resources, userData ou projectRoot
+  const envCandidates = [
+    path.join(process.resourcesPath || '', '.env'),
+    path.join(projectRoot, '.env'),
+    path.join(userDataDir, '.env'),
+  ];
+  for (const envFile of envCandidates) {
+    if (fs.existsSync(envFile)) {
+      dotenv.config({ path: envFile, override: false });
+    }
+  }
+
+  // Se o .env existir no pacote mas ainda não na pasta userData do usuário, cria uma cópia editável
+  const targetUserDataEnv = path.join(userDataDir, '.env');
+  if (!fs.existsSync(targetUserDataEnv)) {
+    const srcEnv = [path.join(process.resourcesPath || '', '.env'), path.join(projectRoot, '.env')].find(p => fs.existsSync(p));
+    if (srcEnv) {
+      try {
+        fs.copyFileSync(srcEnv, targetUserDataEnv);
+        console.log(`📋 .env copiado para ${targetUserDataEnv}`);
+      } catch {}
+    }
+  }
+
   const userDir = process.env.USERPROFILE || process.env.HOME || '';
   const winBun = path.join(userDir, '.bun', 'bin', 'bun.exe');
   const unixBun = path.join(userDir, '.bun', 'bin', 'bun');
 
   let serverCmd = 'bun';
   let serverArgs: string[] = [];
-  const serverEnv: Record<string, string> = { ...process.env, PORT: String(BACKEND_PORT) } as any;
+  const serverEnv: Record<string, string> = {
+    ...process.env,
+    TARGET_URL: process.env.TARGET_URL || 'https://medlaserbrasil.com.br/?page_id=142',
+    SYSTEM_USER: process.env.SYSTEM_USER || 'iury',
+    SYSTEM_PASSWORD: process.env.SYSTEM_PASSWORD || 'Iur!3291',
+    HEADLESS: process.env.HEADLESS || 'true',
+    PORT: String(BACKEND_PORT),
+  } as any;
 
   if (isPackaged) {
     const candidatePaths = [
@@ -66,30 +101,48 @@ async function startBackend() {
   }
 
   try {
+    const logFilePath = path.join(isPackaged ? app.getPath('userData') : projectRoot, 'backend.log');
+    const logStream = fs.createWriteStream(logFilePath, { flags: 'a' });
+
     backendProcess = spawn(serverCmd, serverArgs, {
       cwd: isPackaged ? app.getPath('userData') : projectRoot,
       env: serverEnv,
       stdio: ['ignore', 'pipe', 'pipe'],
       shell: isWin && !isPackaged,
+      windowsHide: true,
     });
 
     backendProcess.stdout?.on('data', (data: Buffer) => {
       process.stdout.write(`[backend] ${data}`);
+      logStream.write(data);
     });
 
     backendProcess.stderr?.on('data', (data: Buffer) => {
       process.stderr.write(`[backend] ${data}`);
+      logStream.write(data);
     });
 
     backendProcess.on('error', (err) => {
       console.error('❌ Erro ao iniciar processo backend:', err);
+      logStream.write(`[main error] Falha no processo: ${err.message}\n`);
     });
 
     backendProcess.on('exit', (code) => {
       console.log(`[backend] Process exited with code ${code}`);
+      logStream.write(`[main] Backend encerrado com código ${code}\n`);
       backendProcess = null;
+
+      if (code !== 0 && !isQuitting) {
+        console.log('🔄 Reiniciando backend automaticamente após encerramento inesperado...');
+        logStream.write('[main] Reiniciando backend automaticamente em 1s...\n');
+        setTimeout(() => {
+          if (!isQuitting) {
+            startBackend();
+          }
+        }, 1000);
+      }
     });
-  } catch (err) {
+  } catch (err: any) {
     console.error('❌ Falha ao tentar spawnar backend:', err);
   }
 }
@@ -103,7 +156,7 @@ function stopBackend() {
 }
 
 // ─── Wait for backend to be ready ───────────────────────────────────────
-async function waitForBackend(maxWaitMs = 15000): Promise<boolean> {
+async function waitForBackend(maxWaitMs = 8000): Promise<boolean> {
   const start = Date.now();
   while (Date.now() - start < maxWaitMs) {
     try {
@@ -112,7 +165,7 @@ async function waitForBackend(maxWaitMs = 15000): Promise<boolean> {
     } catch {
       // Not ready yet
     }
-    await new Promise((r) => setTimeout(r, 300));
+    await new Promise((r) => setTimeout(r, 100));
   }
   return false;
 }
@@ -151,7 +204,7 @@ function createWindow() {
 
 // ─── App Lifecycle ──────────────────────────────────────────────────────
 app.whenReady().then(async () => {
-  startBackend();
+  await startBackend();
 
   console.log('⏳ Waiting for backend to be ready...');
   const ready = await waitForBackend();
@@ -169,10 +222,12 @@ app.whenReady().then(async () => {
 });
 
 app.on('window-all-closed', () => {
+  isQuitting = true;
   stopBackend();
   if (process.platform !== 'darwin') app.quit();
 });
 
 app.on('before-quit', () => {
+  isQuitting = true;
   stopBackend();
 });
