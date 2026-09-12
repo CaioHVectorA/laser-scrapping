@@ -1,5 +1,6 @@
-import { chromium, type Browser, type Page } from 'playwright';
+import { type Browser, type Page } from 'playwright';
 import { config } from './config.js';
+import { launchBrowserWithFallback } from './browserLauncher.js';
 import type { ScrapedItem, ScraperOptions } from './types/index.js';
 
 /**
@@ -136,13 +137,16 @@ const STATUS_PAGE_MAP = [
  * Executa o fluxo principal de extração mapeando o DOM de page_id=343 para extrair as OSs de cada aba.
  */
 export async function runScraper(options: ScraperOptions): Promise<ScrapedItem[]> {
-  const { url, headless, timeoutMs = 30000, maxItems } = options;
+  const { url, headless, timeoutMs = 30000, maxItems, browserType } = options;
 
   console.log(`🌐 Inicializando navegador (Headless: ${headless})...`);
 
-  const browser: Browser = await chromium.launch({
+  const browser: Browser = await launchBrowserWithFallback({
     headless,
-    args: ['--no-sandbox', '--disable-setuid-sandbox']
+    channelPreference: browserType || config.browserChannel,
+    customExecutablePath: config.chromePath,
+    onLog: (msg) => console.log(msg),
+    timeoutMs,
   });
 
   const context = await browser.newContext({
@@ -232,8 +236,12 @@ export async function runScraper(options: ScraperOptions): Promise<ScrapedItem[]
     console.error('❌ Erro durante a execução da raspagem:', error);
     throw error;
   } finally {
-    await context.close();
-    await browser.close();
+    try {
+      if (context) await context.close();
+    } catch {}
+    try {
+      if (browser) await browser.close();
+    } catch {}
   }
 
   return scrapedItems;

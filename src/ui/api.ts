@@ -25,7 +25,26 @@ export async function getOrderById(id: string) {
 }
 
 // ─── Scraper ────────────────────────────────────────────────────────────
-export async function startScraper(options: { headless: boolean }) {
+export interface DetectedBrowserInfo {
+  detected: Array<{
+    id: string;
+    name: string;
+    channel?: string;
+    path?: string;
+    available: boolean;
+  }>;
+  platform: string;
+  defaultChannel: string;
+  recommended: string;
+}
+
+export async function getInstalledBrowsers(): Promise<DetectedBrowserInfo> {
+  const res = await fetch(`${API_BASE}/api/scraper/browsers`);
+  if (!res.ok) throw new Error(await res.text());
+  return res.json();
+}
+
+export async function startScraper(options: { headless: boolean; browser?: string }) {
   const res = await fetch(`${API_BASE}/api/scraper/run`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
@@ -33,6 +52,7 @@ export async function startScraper(options: { headless: boolean }) {
   });
   return res.json();
 }
+
 
 export function subscribeScraperStream(
   onLog: (msg: string) => void,

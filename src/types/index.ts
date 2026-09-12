@@ -40,7 +40,9 @@ export interface ScrapedItem {
 export interface ScraperOptions {
   url: string;
   headless: boolean;
+  browserType?: string;
   timeoutMs?: number;
   maxItems?: number;
   onItemScraped?: (item: ScrapedItem) => Promise<void> | void;
 }
+

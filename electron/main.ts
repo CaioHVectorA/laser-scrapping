@@ -67,8 +67,12 @@ async function startBackend() {
     SYSTEM_USER: process.env.SYSTEM_USER || 'iury',
     SYSTEM_PASSWORD: process.env.SYSTEM_PASSWORD || 'Iur!3291',
     HEADLESS: process.env.HEADLESS || 'true',
+    BROWSER_CHANNEL: process.env.BROWSER_CHANNEL || 'auto',
+    CHROME_PATH: process.env.CHROME_PATH || '',
+    BROWSER_PATH: process.env.BROWSER_PATH || '',
     PORT: String(BACKEND_PORT),
   } as any;
+
 
   if (isPackaged) {
     const candidatePaths = [

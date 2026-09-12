@@ -1,16 +1,25 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { startScraper, subscribeScraperStream } from '../api.js';
-import { Play, Square, Terminal, Eye, EyeOff } from 'lucide-react';
+import { startScraper, subscribeScraperStream, getInstalledBrowsers, type DetectedBrowserInfo } from '../api.js';
+import { Play, Square, Terminal, Eye, EyeOff, Globe } from 'lucide-react';
 
 export const ScraperPanel: React.FC = () => {
   const [running, setRunning] = useState(false);
   const [headless, setHeadless] = useState(true);
+  const [selectedBrowser, setSelectedBrowser] = useState<string>('auto');
+  const [browserInfo, setBrowserInfo] = useState<DetectedBrowserInfo | null>(null);
   const [logs, setLogs] = useState<string[]>([]);
   const [progress, setProgress] = useState({ current: 0, total: 0, percentage: 0 });
   const logTerminalRef = useRef<HTMLDivElement>(null);
   const cleanupRef = useRef<(() => void) | null>(null);
 
   useEffect(() => {
+    // Carrega navegadores detectados no SO
+    getInstalledBrowsers()
+      .then(info => {
+        setBrowserInfo(info);
+      })
+      .catch(() => {});
+
     return () => { cleanupRef.current?.(); };
   }, []);
 
@@ -35,7 +44,7 @@ export const ScraperPanel: React.FC = () => {
     );
 
     try {
-      await startScraper({ headless });
+      await startScraper({ headless, browser: selectedBrowser });
     } catch (err: any) {
       setLogs((prev) => [...prev, `❌ Erro: ${err?.message || String(err)}`]);
     }
@@ -56,6 +65,12 @@ export const ScraperPanel: React.FC = () => {
     }, 2000);
   };
 
+  // Helper para exibir o status do navegador detectado
+  const availableBrowsers = browserInfo?.detected?.filter(b => b.available) || [];
+  const detectedSummary = availableBrowsers.length > 0
+    ? availableBrowsers.map(b => b.name.replace(' (Playwright)', '')).join(' / ')
+    : 'Nenhum detectado (auto-download)';
+
   return (
     <div style={{ display: 'flex', flexDirection: 'column', height: '100%', gap: '16px' }}>
       {/* Control Card */}
@@ -64,12 +79,47 @@ export const ScraperPanel: React.FC = () => {
           <h2 style={{ fontSize: '1.05rem', fontWeight: '600', marginBottom: '4px', display: 'flex', alignItems: 'center', gap: '8px' }}>
             <Play size={18} color="#fafafa" /> Automação de Coleta
           </h2>
-          <p style={{ fontSize: '0.83rem', color: '#a1a1aa' }}>
-            Atualizar e sincronizar ordens de serviço com o banco local.
+          <p style={{ fontSize: '0.83rem', color: '#a1a1aa', display: 'flex', alignItems: 'center', gap: '6px' }}>
+            <span>Atualizar e sincronizar ordens de serviço.</span>
+            <span style={{ color: '#71717a' }}>•</span>
+            <span style={{ fontSize: '0.78rem', color: '#38bdf8', backgroundColor: '#0369a120', padding: '2px 8px', borderRadius: '4px', border: '1px solid #0284c730' }}>
+              Detectado: {detectedSummary}
+            </span>
           </p>
         </div>
 
-        <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: '12px', flexWrap: 'wrap' }}>
+          {/* Seletor de Navegador */}
+          <div style={{ display: 'flex', alignItems: 'center', gap: '6px', backgroundColor: '#27272a', borderRadius: '6px', padding: '4px 8px' }}>
+            <Globe size={14} color="#a1a1aa" />
+            <select
+              value={selectedBrowser}
+              onChange={(e) => setSelectedBrowser(e.target.value)}
+              disabled={running}
+              style={{
+                backgroundColor: 'transparent',
+                color: '#fafafa',
+                border: 'none',
+                fontSize: '0.82rem',
+                outline: 'none',
+                cursor: 'pointer',
+              }}
+            >
+              <option value="auto" style={{ backgroundColor: '#18181b', color: '#fafafa' }}>
+                Auto (Edge / Chrome nativo)
+              </option>
+              <option value="msedge" style={{ backgroundColor: '#18181b', color: '#fafafa' }}>
+                Microsoft Edge
+              </option>
+              <option value="chrome" style={{ backgroundColor: '#18181b', color: '#fafafa' }}>
+                Google Chrome
+              </option>
+              <option value="chromium" style={{ backgroundColor: '#18181b', color: '#fafafa' }}>
+                Chromium (Playwright)
+              </option>
+            </select>
+          </div>
+
           <button className={`btn ${headless ? 'btn-secondary' : 'btn-amber'}`} onClick={() => setHeadless(!headless)} disabled={running}>
             {headless ? <EyeOff size={15} /> : <Eye size={15} />}
             {headless ? 'Modo Oculto' : 'Modo Visível'}
@@ -115,3 +165,4 @@ export const ScraperPanel: React.FC = () => {
     </div>
   );
 };
+

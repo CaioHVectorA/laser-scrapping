@@ -8,6 +8,7 @@ import { saveToDatabase } from './db.js';
 import { exportToExcel } from './excel.js';
 import { exportToCsv } from './csv.js';
 import { parseXlsx, randomizeMeasurements, updateCellValues } from './services/xlsxService.js';
+import { detectInstalledBrowsers } from './browserLauncher.js';
 
 const require = createRequire(import.meta.url);
 
@@ -135,7 +136,7 @@ function broadcastSSE(event: string, data: any) {
 // ─── Route handlers ─────────────────────────────────────────────────────
 async function handleRequest(req: Request): Promise<Response> {
   const url = new URL(req.url);
-  const path = url.pathname;
+  const reqPath = url.pathname;
 
   // CORS preflight
   if (req.method === 'OPTIONS') {
@@ -143,7 +144,7 @@ async function handleRequest(req: Request): Promise<Response> {
   }
 
   // ── Database: list orders ──
-  if (path === '/api/orders' && req.method === 'GET') {
+  if (reqPath === '/api/orders' && req.method === 'GET') {
     try {
       const database = getDb();
       const search = url.searchParams.get('search') || '';
@@ -183,9 +184,9 @@ async function handleRequest(req: Request): Promise<Response> {
   }
 
   // ── Database: single order ──
-  if (path.startsWith('/api/orders/') && req.method === 'GET') {
+  if (reqPath.startsWith('/api/orders/') && req.method === 'GET') {
     try {
-      const id = path.split('/').pop();
+      const id = reqPath.split('/').pop();
       const database = getDb();
       const row = database.query('SELECT * FROM ordens_servico WHERE id = ?').get(id);
       return row ? jsonResponse(row) : errorResponse('OS não encontrada', 404);
@@ -194,14 +195,32 @@ async function handleRequest(req: Request): Promise<Response> {
     }
   }
 
+  // ── Scraper: list detected browsers ──
+  if (reqPath === '/api/scraper/browsers' && req.method === 'GET') {
+    try {
+      const detected = detectInstalledBrowsers();
+      const isWin = process.platform === 'win32';
+      const recommended = isWin ? 'msedge' : 'chrome';
+      return jsonResponse({
+        detected,
+        platform: process.platform,
+        defaultChannel: config.browserChannel || 'auto',
+        recommended,
+      });
+    } catch (err: any) {
+      return errorResponse(err.message);
+    }
+  }
+
   // ── Scraper: run ──
-  if (path === '/api/scraper/run' && req.method === 'POST') {
+  if (reqPath === '/api/scraper/run' && req.method === 'POST') {
     if (scraperRunning) {
       return errorResponse('Scraper já está em execução', 409);
     }
 
     const body = await req.json().catch(() => ({}));
     const headless = body.headless !== false;
+    const browserType = body.browser || config.browserChannel || 'auto';
 
     scraperRunning = true;
     scraperLogs.length = 0;
@@ -241,6 +260,7 @@ async function handleRequest(req: Request): Promise<Response> {
         const items = await runScraper({
           url: config.targetUrl,
           headless,
+          browserType,
           onItemScraped: async (item) => {
             try {
               await saveToDatabase([item], config.dbFilePath);
@@ -281,7 +301,7 @@ async function handleRequest(req: Request): Promise<Response> {
   }
 
   // ── Scraper: SSE stream ──
-  if (path === '/api/scraper/stream' && req.method === 'GET') {
+  if (reqPath === '/api/scraper/stream' && req.method === 'GET') {
     let activeCtrl: ReadableStreamDefaultController | null = null;
     const stream = new ReadableStream({
       start(controller) {
@@ -315,12 +335,12 @@ async function handleRequest(req: Request): Promise<Response> {
   }
 
   // ── Scraper: status ──
-  if (path === '/api/scraper/status' && (req.method === 'GET' || req.method === 'HEAD')) {
+  if (reqPath === '/api/scraper/status' && (req.method === 'GET' || req.method === 'HEAD')) {
     return jsonResponse({ running: scraperRunning, progress: scraperProgress, logCount: scraperLogs.length });
   }
 
   // ── XLSX: parse ──
-  if (path === '/api/xlsx/parse' && req.method === 'POST') {
+  if (reqPath === '/api/xlsx/parse' && req.method === 'POST') {
     try {
       const body = await req.json();
       const result = await parseXlsx(body.filePath);
@@ -331,7 +351,7 @@ async function handleRequest(req: Request): Promise<Response> {
   }
 
   // ── XLSX: randomize ──
-  if (path === '/api/xlsx/randomize' && req.method === 'POST') {
+  if (reqPath === '/api/xlsx/randomize' && req.method === 'POST') {
     try {
       const body = await req.json();
       const result = await randomizeMeasurements(
@@ -347,7 +367,7 @@ async function handleRequest(req: Request): Promise<Response> {
   }
 
   // ── XLSX: save to server (disk in output/) ──
-  if (path === '/api/xlsx/save' && req.method === 'POST') {
+  if (reqPath === '/api/xlsx/save' && req.method === 'POST') {
     try {
       const body = await req.json();
       const { fileName, fileBase64 } = body;
@@ -379,7 +399,7 @@ async function handleRequest(req: Request): Promise<Response> {
   }
 
   // ── XLSX: get raw file bytes from output/ ──
-  if (path === '/api/xlsx/raw' && (req.method === 'GET' || req.method === 'HEAD')) {
+  if (reqPath === '/api/xlsx/raw' && (req.method === 'GET' || req.method === 'HEAD')) {
     try {
       const fileName = url.searchParams.get('fileName') || url.searchParams.get('file');
       if (!fileName) return errorResponse('Nome do arquivo é obrigatório', 400);
@@ -403,7 +423,7 @@ async function handleRequest(req: Request): Promise<Response> {
   }
 
   // ── XLSX: list files in output/ ──
-  if (path === '/api/xlsx/files' && req.method === 'GET') {
+  if (reqPath === '/api/xlsx/files' && req.method === 'GET') {
     try {
       const outputDir = path.dirname(config.outputFilePath);
       if (!fs.existsSync(outputDir)) {
