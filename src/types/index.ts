@@ -43,6 +43,7 @@ export interface ScraperOptions {
   browserType?: string;
   timeoutMs?: number;
   maxItems?: number;
+  targetOsId?: string;
   onItemScraped?: (item: ScrapedItem) => Promise<void> | void;
 }
 

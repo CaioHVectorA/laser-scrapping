@@ -44,7 +44,7 @@ export async function getInstalledBrowsers(): Promise<DetectedBrowserInfo> {
   return res.json();
 }
 
-export async function startScraper(options: { headless: boolean; browser?: string }) {
+export async function startScraper(options: { headless: boolean; browser?: string; osId?: string }) {
   const res = await fetch(`${API_BASE}/api/scraper/run`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },

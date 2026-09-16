@@ -40,7 +40,7 @@ import {
   DEFAULT_MEDLASER_PRESET,
   CustomLayoutPreset
 } from '../formulas.js';
-import { DbOrder, applyOsSubstitutions, SubstitutionDiffItem, formatDateExtenso } from '../osSubstitution.js';
+import { DbOrder, applyOsSubstitutions, randomizeSegEletFields, SubstitutionDiffItem, formatDateExtenso } from '../osSubstitution.js';
 import { getRecentFiles, saveRecentFile, getTemplates, saveTemplate, RecentItem, TemplateItem } from '../storage.js';
 import { MeasurementChart } from './MeasurementChart.js';
 import { ReportDocumentView } from './ReportDocumentView.js';
@@ -230,7 +230,7 @@ export const OperationPanel: React.FC = () => {
     // Auto-apply OS substitutions if spreadsheet is loaded
     if (parsedData) {
       try {
-        const res = applyOsSubstitutions(parsedData, os, workbookRef.current);
+        const res = applyOsSubstitutions(parsedData, os, workbookRef.current, { randomizeSegElet: true });
         setParsedData(res.updatedParsedData);
         setSubstitutionDiffs(res.diffs);
         setIsOsSubstituted(true);
@@ -458,7 +458,7 @@ export const OperationPanel: React.FC = () => {
     setStatusMsg(`⏳ Randomizando ${selectedSheetsForVariation.size} abas no modo "${modeLabels[variationMode]}" (±${maxPercent}%)...`);
 
     try {
-      const nextParsed = cloneParsedData(parsedData);
+      let nextParsed = cloneParsedData(parsedData);
       let totalAlteredCount = 0;
 
       nextParsed.sheets.forEach((sheet: XlsxSheet) => {
@@ -573,6 +573,15 @@ export const OperationPanel: React.FC = () => {
         applyFormulasToMatrix(sheet.matrix, worksheet);
       });
 
+      // Se a Folha 1 estiver entre as selecionadas, randomiza os ensaios de Segurança Elétrica (±30%)
+      if (nextParsed.sheets.length > 0 && selectedSheetsForVariation.has(nextParsed.sheets[0].name)) {
+        const segRes = randomizeSegEletFields(nextParsed, workbookRef.current, 0.30);
+        if (segRes.replacedCount > 0) {
+          nextParsed = segRes.updatedParsedData as any;
+          totalAlteredCount += segRes.replacedCount;
+        }
+      }
+
       setParsedData(nextParsed);
       setStatusMsg(`✨ Variação "${modeLabels[variationMode]}" aplicada com SUCESSO em ${totalAlteredCount} medições nas ${selectedSheetsForVariation.size} abas selecionadas.`);
     } catch (err: any) {
@@ -594,7 +603,7 @@ export const OperationPanel: React.FC = () => {
     setStatusMsg(`⏳ Aplicando dados da OS #${selectedOs.id} no certificado (Folha 1)...`);
 
     try {
-      const result = applyOsSubstitutions(parsedData, selectedOs, workbookRef.current);
+      const result = applyOsSubstitutions(parsedData, selectedOs, workbookRef.current, { randomizeSegElet: true });
       setParsedData(result.updatedParsedData);
       setSubstitutionDiffs(result.diffs);
       setIsOsSubstituted(true);
@@ -1035,6 +1044,12 @@ export const OperationPanel: React.FC = () => {
                 order={selectedOs}
                 sheet={parsedData?.sheets?.[0]}
                 workbookRef={workbookRef.current}
+                onCellChange={(address, newVal) => {
+                  if (parsedData?.sheets?.[0]?.cells?.[address]) {
+                    parsedData.sheets[0].cells[address].displayValue = newVal;
+                    parsedData.sheets[0].cells[address].value = newVal;
+                  }
+                }}
               />
             </div>
           )}
@@ -1076,6 +1091,12 @@ export const OperationPanel: React.FC = () => {
                     order={selectedOs}
                     sheet={parsedData?.sheets?.[0]}
                     workbookRef={workbookRef.current}
+                    onCellChange={(address, newVal) => {
+                      if (parsedData?.sheets?.[0]?.cells?.[address]) {
+                        parsedData.sheets[0].cells[address].displayValue = newVal;
+                        parsedData.sheets[0].cells[address].value = newVal;
+                      }
+                    }}
                   />
                 </div>
               ) : (

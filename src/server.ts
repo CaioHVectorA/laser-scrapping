@@ -221,6 +221,7 @@ async function handleRequest(req: Request): Promise<Response> {
     const body = await req.json().catch(() => ({}));
     const headless = body.headless !== false;
     const browserType = body.browser || config.browserChannel || 'auto';
+    const targetOsId = body.osId ? String(body.osId).trim() : undefined;
 
     scraperRunning = true;
     scraperLogs.length = 0;
@@ -256,11 +257,17 @@ async function handleRequest(req: Request): Promise<Response> {
     // Run async, respond immediately
     (async () => {
       try {
-        pushLog('🚀 Iniciando automação MedLaser (Scraper, SQLite, CSV & Excel)...');
+        if (targetOsId) {
+          pushLog(`🎯 Iniciando busca e raspagem pontual da OS #${targetOsId}...`);
+        } else {
+          pushLog('⚠️ Nenhuma OS informada. A varredura geral foi desativada conforme solicitado.');
+          throw new Error('Nenhuma OS informada. Por favor, informe o número da OS a ser pesquisada.');
+        }
         const items = await runScraper({
           url: config.targetUrl,
           headless,
           browserType,
+          targetOsId,
           onItemScraped: async (item) => {
             try {
               await saveToDatabase([item], config.dbFilePath);

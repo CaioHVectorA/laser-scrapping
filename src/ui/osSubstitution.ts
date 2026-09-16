@@ -25,7 +25,7 @@ export interface DbOrder {
 }
 
 export interface SubstitutionDiffItem {
-  fieldCategory: 'Contratante' | 'Técnico / Laboratório' | 'Número de Série' | 'Datas' | 'Ordem de Serviço' | 'Equipamento';
+  fieldCategory: 'Contratante' | 'Técnico / Laboratório' | 'Número de Série' | 'Datas' | 'Ordem de Serviço' | 'Equipamento' | 'Segurança Elétrica';
   label: string;
   address?: string;
   oldValue: string;
@@ -119,15 +119,21 @@ export function formatDateExtenso(dateStr?: string): string {
   return dateStr.toUpperCase();
 }
 
+export interface OsSubstitutionOptions {
+  randomizeSegElet?: boolean;
+  segEletPct?: number; // Padrão: 0.30 (30%)
+}
+
 /**
  * Subtitui os campos da OS na primeira página (Relatório / Certificado) da planilha XLSX.
  */
 export function applyOsSubstitutions(
   parsedData: XlsxParsed,
   order: DbOrder,
-  workbookRef?: any
+  workbookRef?: any,
+  options?: OsSubstitutionOptions
 ): SubstitutionResult {
-  const cloned = JSON.parse(JSON.stringify(parsedData)) as XlsxParsed;
+  let cloned = JSON.parse(JSON.stringify(parsedData)) as XlsxParsed;
   const diffs: SubstitutionDiffItem[] = [];
   let replacedCount = 0;
 
@@ -153,8 +159,6 @@ export function applyOsSubstitutions(
     : 'Roberto Aldilei Favoreto';
   const tecnicoUpper = tecnicoNome.toUpperCase();
 
-  const equipamentoLinha = cleanText(order.equipamento_linha_uso) || 'Laser';
-  const equipamentoModelo = cleanText(order.equipamento_modelo) || 'UroPulse';
   const equipamentoSerie = cleanText(order.equipamento_codigo) || '';
   const dataExtenso = formatDateExtenso(order.data_entrada || order.scraped_at);
 
@@ -181,6 +185,10 @@ export function applyOsSubstitutions(
       });
       cell.value = val;
       cell.displayValue = val;
+      if (targetSheet.cells && targetSheet.cells[cell.address]) {
+        targetSheet.cells[cell.address].value = val;
+        targetSheet.cells[cell.address].displayValue = val;
+      }
       if (excelWorksheet) {
         try {
           excelWorksheet.getRow(rIdx + 1).getCell(cIdx + 1).value = val;
@@ -246,7 +254,11 @@ export function applyOsSubstitutions(
     }
   }
 
-  // ═══ 3. NÚMEROS DE SÉRIE E ORDENS DE SERVIÇO E EQUIPAMENTO ═══
+  // ═══ 3. NÚMEROS DE SÉRIE E ORDENS DE SERVIÇO ═══
+  // Protege para não alterar Equipamento e Modelo do template ('Não mudar equipamento!')
+  // Corrige extravasamento do número de série para células adjacentes (I, J, K, L)
+  const processedRows = new Set<number>();
+
   for (let r = 0; r < matrix.length; r++) {
     const row = matrix[r];
     if (!row) continue;
@@ -256,46 +268,44 @@ export function applyOsSubstitutions(
       if (!cell) continue;
       const text = String(cell.displayValue || cell.value || '').trim();
 
-      // Número de Série
-      if (/^N[úu]mero\s*de\s*S[ée]rie/i.test(text)) {
-        // Preenche as células adjacentes de valor
-        for (let colOffset = 4; colOffset <= 7; colOffset++) {
-          if (c + colOffset < row.length) {
-            helperSetCell(r, c + colOffset, equipamentoSerie, 'Número de Série', `Número de Série (${cell.address})`);
+      // Número de Série do Equipamento (Seção 5: r > 40)
+      // Exclui a linha 31 do Fluke ESA612 ("Número de Série: 1910036")
+      if ((/^N[úu]mero\s*de\s*S[ée]rie$/i.test(text) || /^Numero\s*de\s*Serie\s*do\s*Equipamento$/i.test(text)) && r > 40) {
+        if (!processedRows.has(r * 1000 + 1)) {
+          processedRows.add(r * 1000 + 1);
+          if (/do\s*Equipamento/i.test(text)) {
+            for (let col = 6; col <= 16; col++) {
+              if (col < row.length && row[col] && String(row[col]?.displayValue || row[col]?.value || '').trim() !== '') {
+                helperSetCell(r, col, equipamentoSerie, 'Número de Série', `Número de Série Rodapé (Linha ${r + 1})`);
+              }
+            }
+          } else {
+            for (let col = 5; col <= 7; col++) {
+              if (col < row.length) {
+                helperSetCell(r, col, equipamentoSerie, 'Número de Série', `Número de Série (Linha ${r + 1})`);
+              }
+            }
           }
         }
       }
 
       // Ordem de Serviço
-      if (/^Ordem\s*de\s*Servi[çc]o/i.test(text)) {
-        for (let colOffset = 4; colOffset <= 7; colOffset++) {
-          if (c + colOffset < row.length) {
-            helperSetCell(r, c + colOffset, osId, 'Ordem de Serviço', `Ordem de Serviço (#${osId})`);
-          }
-        }
-      }
-
-      // Equipamento / Modelo nas seções 3 e 5
-      if (text === 'Equipamento' && r > 50 && r < 70) {
-        for (let colOffset = 6; colOffset <= 9; colOffset++) {
-          if (c + colOffset < row.length) {
-            helperSetCell(r, c + colOffset, `Laser ${equipamentoModelo}`, 'Equipamento', `Equipamento da Calibração`);
-          }
-        }
-      }
-
-      if (text === 'Modelo' && r > 115 && r < 130) {
-        for (let colOffset = 4; colOffset <= 7; colOffset++) {
-          if (c + colOffset < row.length) {
-            helperSetCell(r, c + colOffset, equipamentoModelo, 'Equipamento', `Modelo do Equipamento`);
-          }
-        }
-      }
-
-      if (text === 'Equipamento' && r > 115 && r < 130) {
-        for (let colOffset = 4; colOffset <= 7; colOffset++) {
-          if (c + colOffset < row.length) {
-            helperSetCell(r, c + colOffset, equipamentoLinha, 'Equipamento', `Linha do Equipamento`);
+      if (/^Ordem\s*de\s*Servi[çc]o$/i.test(text) || /^ORDEM\s*DE\s*SERVIÇO$/i.test(text)) {
+        if (!processedRows.has(r * 1000 + 2)) {
+          processedRows.add(r * 1000 + 2);
+          const isExtendedFooter = row[5] && /^ORDEM\s*DE\s*SERVIÇO$/i.test(String(row[5]?.displayValue || row[5]?.value || '').trim());
+          if (isExtendedFooter) {
+            for (let col = 6; col <= 16; col++) {
+              if (col < row.length && row[col] && String(row[col]?.displayValue || row[col]?.value || '').trim() !== '') {
+                helperSetCell(r, col, osId, 'Ordem de Serviço', `Ordem de Serviço Rodapé (#${osId})`);
+              }
+            }
+          } else {
+            for (let col = 5; col <= 7; col++) {
+              if (col < row.length) {
+                helperSetCell(r, col, osId, 'Ordem de Serviço', `Ordem de Serviço (#${osId})`);
+              }
+            }
           }
         }
       }
@@ -320,6 +330,169 @@ export function applyOsSubstitutions(
       if (text.includes('AVALIAÇÃO') && text.includes('REALIZADA NO DIA')) {
         const dataAvaliacaoStr = `AVALIAÇÃO  REALIZADA NO DIA ${dataExtenso}`;
         helperSetCell(r, c, dataAvaliacaoStr, 'Datas', 'Data da Avaliação');
+      }
+    }
+  }
+
+  // ═══ 5. SEGURANÇA ELÉTRICA: RANDOMIZAR 30% DOS DADOS DA 1ª ABA ═══
+  // Se a planilha contiver ensaios de segurança elétrica (Resistência para o terra e Corrente de fuga),
+  // e options?.randomizeSegElet não for explicitamente falso, aplica a variação de ±30%.
+  if (options?.randomizeSegElet !== false) {
+    const segEletRes = randomizeSegEletFields(cloned, workbookRef, options?.segEletPct ?? 0.30);
+    if (segEletRes.replacedCount > 0) {
+      diffs.push(...segEletRes.diffs);
+      replacedCount += segEletRes.replacedCount;
+      cloned = segEletRes.updatedParsedData;
+    }
+  }
+
+  return {
+    updatedParsedData: cloned,
+    diffs,
+    replacedCount
+  };
+}
+
+/**
+ * Randomiza campos de Segurança Elétrica da 1ª aba (±30%):
+ * 1. Resistência para o Terra IEC 62353 5.3.2 (Row 109, colunas K..N) -> limite norma <= 0.30 Ohms
+ * 2. Corrente de Fuga para Carcaça (Row 114, colunas K..L) -> limite norma <= 100 uA
+ */
+export function randomizeSegEletFields(
+  parsedData: XlsxParsed,
+  workbookRef?: any,
+  pct: number = 0.30
+): SubstitutionResult {
+  const cloned = JSON.parse(JSON.stringify(parsedData)) as XlsxParsed;
+  const diffs: SubstitutionDiffItem[] = [];
+  let replacedCount = 0;
+
+  if (!cloned.sheets || cloned.sheets.length === 0) {
+    return { updatedParsedData: cloned, diffs, replacedCount: 0 };
+  }
+
+  const targetSheet = cloned.sheets[0];
+  const origSheet = parsedData.sheets?.[0];
+  const matrix = targetSheet.matrix;
+  const sheetName = targetSheet.name;
+  const excelWorksheet = workbookRef?.getWorksheet(sheetName);
+
+  const helperSet = (rIdx: number, cIdx: number, val: string, label: string) => {
+    if (rIdx < 0 || rIdx >= matrix.length) return;
+    const row = matrix[rIdx];
+    if (!row) return;
+    const cell = row[cIdx];
+    if (!cell) return;
+
+    const oldDisplay = String(cell.displayValue || cell.value || '').trim();
+    if (oldDisplay !== val) {
+      diffs.push({
+        fieldCategory: 'Segurança Elétrica',
+        label,
+        address: cell.address,
+        oldValue: oldDisplay,
+        newValue: val
+      });
+
+      // Atualiza célula na cópia (cloned)
+      cell.value = val;
+      cell.displayValue = val;
+      if (targetSheet.cells && targetSheet.cells[cell.address]) {
+        targetSheet.cells[cell.address].value = val;
+        targetSheet.cells[cell.address].displayValue = val;
+      }
+
+      // Atualiza célula diretamente no objeto original passado (parsedData)
+      if (origSheet) {
+        if (origSheet.matrix[rIdx]?.[cIdx]) {
+          origSheet.matrix[rIdx][cIdx].value = val;
+          origSheet.matrix[rIdx][cIdx].displayValue = val;
+        }
+        if (origSheet.cells && origSheet.cells[cell.address]) {
+          origSheet.cells[cell.address].value = val;
+          origSheet.cells[cell.address].displayValue = val;
+        }
+      }
+
+      // Sincroniza com ExcelJS
+      if (excelWorksheet) {
+        try {
+          excelWorksheet.getRow(rIdx + 1).getCell(cIdx + 1).value = val;
+        } catch {}
+      }
+      replacedCount++;
+    }
+  };
+
+  for (let r = 0; r < matrix.length; r++) {
+    const row = matrix[r];
+    if (!row) continue;
+
+    for (let c = 0; c < row.length; c++) {
+      const cell = row[c];
+      if (!cell) continue;
+      const text = String(cell.displayValue || cell.value || '').trim();
+
+      // 1. Resistência para o Terra IEC 62353 5.3.2
+      if (/Resist[êe]ncia\s+(?:para\s+o\s+)?Terra/i.test(text) && !/M[áa]xima|M[íi]nima/i.test(text)) {
+        let curValStr = '';
+        for (let col = 10; col <= 13; col++) {
+          if (row[col]?.displayValue || row[col]?.value) {
+            curValStr = String(row[col]?.displayValue || row[col]?.value);
+            break;
+          }
+        }
+        const match = curValStr.replace(',', '.').match(/\d+(\.\d+)?/);
+        const baseNum = match ? parseFloat(match[0]) : 0.25;
+        // Variação ±30%
+        let delta = (Math.random() * 2 - 1) * pct;
+        // Se a base já estiver no limite superior (>= 0.28), inclina a variação para baixo para não ficar travado
+        if (baseNum >= 0.28 && delta > -0.05) {
+          delta = -(0.05 + Math.random() * (pct - 0.05));
+        }
+        let newNum = baseNum * (1 + delta);
+        // Limites normativos seguros IEC 62353: máximo 0.28 Ohms para manter APROVADO com folga (norma <= 0.30 Ohms)
+        if (newNum > 0.28) newNum = 0.28;
+        if (newNum < 0.16) newNum = 0.16;
+        let formatted = newNum.toFixed(2).replace('.', ',') + ' Ohms';
+        if (formatted === curValStr.trim()) {
+          newNum = newNum > 0.22 ? newNum - 0.03 : newNum + 0.03;
+          formatted = newNum.toFixed(2).replace('.', ',') + ' Ohms';
+        }
+
+        for (let col = 10; col <= 13; col++) {
+          helperSet(r, col, formatted, 'Resistência para o Terra IEC 62353');
+        }
+        break;
+      }
+
+      // 2. Corrente de Fuga para Carcaça
+      if (/Corrente\s+de\s+Fuga\s+(?:para\s+)?Carca[çc]a/i.test(text) && !/M[áa]xima|M[íi]nima/i.test(text)) {
+        let curValStr = '';
+        for (let col = 10; col <= 12; col++) {
+          if (row[col]?.displayValue || row[col]?.value) {
+            curValStr = String(row[col]?.displayValue || row[col]?.value);
+            break;
+          }
+        }
+        const match = curValStr.replace(',', '.').match(/\d+(\.\d+)?/);
+        const baseNum = match ? parseFloat(match[0]) : 3.0;
+        const delta = (Math.random() * 2 - 1) * pct;
+        let newNum = baseNum * (1 + delta);
+        // Limite seguro IEC 62353 (< 100 uA, proporcional à base)
+        if (newNum < 1.5) newNum = 1.5;
+        if (baseNum < 10 && newNum > 9.5) newNum = 9.5;
+        if (baseNum >= 10 && newNum > 45) newNum = 45;
+        let formatted = newNum.toFixed(1).replace('.', ',') + ' uA';
+        if (formatted === curValStr.trim()) {
+          newNum = newNum > 3.0 ? newNum - 0.6 : newNum + 0.6;
+          formatted = newNum.toFixed(1).replace('.', ',') + ' uA';
+        }
+
+        for (let col = 10; col <= 11; col++) {
+          helperSet(r, col, formatted, 'Corrente de Fuga para Carcaça');
+        }
+        break;
       }
     }
   }

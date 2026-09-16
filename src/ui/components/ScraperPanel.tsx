@@ -1,10 +1,11 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { startScraper, subscribeScraperStream, getInstalledBrowsers, type DetectedBrowserInfo } from '../api.js';
-import { Play, Square, Terminal, Eye, EyeOff, Globe } from 'lucide-react';
+import { Play, Square, Terminal, Eye, EyeOff, Globe, Search, Target } from 'lucide-react';
 
 export const ScraperPanel: React.FC = () => {
   const [running, setRunning] = useState(false);
   const [headless, setHeadless] = useState(true);
+  const [targetOs, setTargetOs] = useState('');
   const [selectedBrowser, setSelectedBrowser] = useState<string>('auto');
   const [browserInfo, setBrowserInfo] = useState<DetectedBrowserInfo | null>(null);
   const [logs, setLogs] = useState<string[]>([]);
@@ -30,6 +31,11 @@ export const ScraperPanel: React.FC = () => {
   }, [logs]);
 
   const handleStart = async () => {
+    if (!targetOs.trim()) {
+      setLogs((prev) => [...prev, '⚠️ Por favor, informe o número da Ordem de Serviço (OS) a ser extraída (ex: 7588).']);
+      return;
+    }
+
     if (running) return;
 
     setRunning(true);
@@ -44,7 +50,11 @@ export const ScraperPanel: React.FC = () => {
     );
 
     try {
-      await startScraper({ headless, browser: selectedBrowser });
+      await startScraper({
+        headless,
+        browser: selectedBrowser,
+        osId: targetOs.trim()
+      });
     } catch (err: any) {
       setLogs((prev) => [...prev, `❌ Erro: ${err?.message || String(err)}`]);
     }
@@ -77,10 +87,10 @@ export const ScraperPanel: React.FC = () => {
       <div style={{ backgroundColor: '#18181b', border: '1px solid #27272a', borderRadius: '8px', padding: '18px 20px', display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '16px' }}>
         <div>
           <h2 style={{ fontSize: '1.05rem', fontWeight: '600', marginBottom: '4px', display: 'flex', alignItems: 'center', gap: '8px' }}>
-            <Play size={18} color="#fafafa" /> Automação de Coleta
+            <Search size={18} color="#fafafa" /> Extração Pontual por OS
           </h2>
           <p style={{ fontSize: '0.83rem', color: '#a1a1aa', display: 'flex', alignItems: 'center', gap: '6px' }}>
-            <span>Atualizar e sincronizar ordens de serviço.</span>
+            <span>Pesquisa direta por Ordem de Serviço no sistema MedLaser (sem varredura geral).</span>
             <span style={{ color: '#71717a' }}>•</span>
             <span style={{ fontSize: '0.78rem', color: '#38bdf8', backgroundColor: '#0369a120', padding: '2px 8px', borderRadius: '4px', border: '1px solid #0284c730' }}>
               Detectado: {detectedSummary}
@@ -88,7 +98,37 @@ export const ScraperPanel: React.FC = () => {
           </p>
         </div>
 
-        <div style={{ display: 'flex', alignItems: 'center', gap: '12px', flexWrap: 'wrap' }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: '10px', flexWrap: 'wrap' }}>
+          {/* Campo de Busca por OS */}
+          <div style={{ display: 'flex', alignItems: 'center', gap: '6px', backgroundColor: '#27272a', borderRadius: '6px', padding: '6px 12px', border: targetOs.trim() ? '1px solid #0284c7' : '1px solid #3f3f46' }}>
+            <Search size={14} color={targetOs.trim() ? '#38bdf8' : '#a1a1aa'} />
+            <input
+              type="text"
+              placeholder="Número da OS (ex: 7588)"
+              value={targetOs}
+              onChange={(e) => setTargetOs(e.target.value)}
+              disabled={running}
+              style={{
+                backgroundColor: 'transparent',
+                color: '#fafafa',
+                border: 'none',
+                fontSize: '0.84rem',
+                outline: 'none',
+                width: '180px'
+              }}
+              title="Digite a OS para pesquisa e extração direta"
+            />
+            {targetOs && (
+              <button
+                onClick={() => setTargetOs('')}
+                disabled={running}
+                style={{ background: 'none', border: 'none', color: '#a1a1aa', cursor: 'pointer', fontSize: '12px', padding: 0 }}
+              >
+                ✕
+              </button>
+            )}
+          </div>
+
           {/* Seletor de Navegador */}
           <div style={{ display: 'flex', alignItems: 'center', gap: '6px', backgroundColor: '#27272a', borderRadius: '6px', padding: '4px 8px' }}>
             <Globe size={14} color="#a1a1aa" />
@@ -125,9 +165,27 @@ export const ScraperPanel: React.FC = () => {
             {headless ? 'Modo Oculto' : 'Modo Visível'}
           </button>
 
-          <button className="btn btn-primary" style={{ padding: '8px 20px' }} onClick={handleStart} disabled={running}>
-            {running ? <Square size={16} /> : <Play size={16} />}
-            {running ? 'Executando...' : 'Iniciar Automação'}
+          <button
+            className="btn btn-primary"
+            style={{
+              padding: '8px 18px',
+              backgroundColor: targetOs.trim() ? '#0284c7' : '#3f3f46',
+              cursor: targetOs.trim() && !running ? 'pointer' : 'not-allowed',
+              opacity: targetOs.trim() || running ? 1 : 0.6
+            }}
+            onClick={handleStart}
+            disabled={running || !targetOs.trim()}
+          >
+            {running ? (
+              <Square size={16} />
+            ) : (
+              <Target size={16} />
+            )}
+            {running
+              ? 'Extraindo...'
+              : targetOs.trim()
+                ? `Extrair OS #${targetOs.trim()}`
+                : 'Informe a OS'}
           </button>
         </div>
       </div>

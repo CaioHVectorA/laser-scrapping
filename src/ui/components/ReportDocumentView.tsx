@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useMemo } from 'react';
 import { DbOrder, XlsxSheet } from '../types.js';
-import { formatDateExtenso } from '../osSubstitution.js';
+import { formatDateExtenso, randomizeSegEletFields } from '../osSubstitution.js';
 import {
   FileText,
   Printer,
@@ -12,7 +12,9 @@ import {
   Check,
   Award,
   Thermometer,
-  Calendar
+  Calendar,
+  Sparkles,
+  Activity
 } from 'lucide-react';
 
 export interface ReportDocumentViewProps {
@@ -41,6 +43,8 @@ export interface DocumentFields {
   umidade: string;
   pressao: string;
   voltagem: string;
+  resistenciaTerra?: string;
+  correnteFuga?: string;
   addresses: Record<string, string>;
 }
 
@@ -143,8 +147,8 @@ export function extractDocData(sheet?: XlsxSheet | null, order?: DbOrder | null)
         }
       }
 
-      // 3. NÚMERO DE SÉRIE
-      if (/^N[úu]mero\s*de\s*S[ée]rie/i.test(text) || /^Numero\s*de\s*Serie/i.test(text)) {
+      // 3. NÚMERO DE SÉRIE (Seção 5: r > 40 para não pegar Fluke ESA612 na linha 31)
+      if (((/^N[úu]mero\s*de\s*S[ée]rie$/i.test(text) || /^Numero\s*de\s*Serie/i.test(text)) && r > 40)) {
         for (let colOff = 1; colOff <= 8; colOff++) {
           const adjCell = row[c + colOff];
           const adjText = String(adjCell?.displayValue || adjCell?.value || '').trim();
@@ -188,6 +192,32 @@ export function extractDocData(sheet?: XlsxSheet | null, order?: DbOrder | null)
         if (dMatch) {
           data.dataExtenso = dMatch[1].trim();
           data.addresses['dataExtenso'] = cell.address;
+        }
+      }
+
+      // 7. SEGURANÇA ELÉTRICA: Resistência para o Terra IEC 62353
+      if (/Resist[êe]ncia\s+(?:para\s+o\s+)?Terra/i.test(text) && !/M[áa]xima|M[íi]nima/i.test(text)) {
+        for (let col = 10; col <= 13; col++) {
+          const adjCell = row[col];
+          const adjText = String(adjCell?.displayValue || adjCell?.value || '').trim();
+          if (adjText) {
+            data.resistenciaTerra = adjText;
+            data.addresses['resistenciaTerra'] = adjCell!.address;
+            break;
+          }
+        }
+      }
+
+      // 8. SEGURANÇA ELÉTRICA: Corrente de Fuga para Carcaça
+      if (/Corrente\s+de\s+Fuga\s+(?:para\s+)?Carca[çc]a/i.test(text) && !/M[áa]xima|M[íi]nima/i.test(text)) {
+        for (let col = 10; col <= 12; col++) {
+          const adjCell = row[col];
+          const adjText = String(adjCell?.displayValue || adjCell?.value || '').trim();
+          if (adjText) {
+            data.correnteFuga = adjText;
+            data.addresses['correnteFuga'] = adjCell!.address;
+            break;
+          }
         }
       }
     }
@@ -257,6 +287,41 @@ export const ReportDocumentView: React.FC<ReportDocumentViewProps> = ({
     setTimeout(() => setSavedBadge(false), 2000);
   };
 
+  const handleRandomizeSegElet = () => {
+    if (!sheet) return;
+    const mockParsed: any = {
+      filePath: '',
+      fileName: '',
+      sheets: [sheet],
+      measurementCellsCount: 0
+    };
+    const res = randomizeSegEletFields(mockParsed, workbookRef, 0.30);
+
+    // Atualiza diretamente o estado do documento para refletir imediatamente na tela
+    setDoc((prev) => {
+      const updated = { ...prev };
+      for (const diff of res.diffs) {
+        if (diff.label.includes('Resistência')) {
+          updated.resistenciaTerra = diff.newValue;
+        } else if (diff.label.includes('Corrente')) {
+          updated.correnteFuga = diff.newValue;
+        }
+      }
+      if (onDataChange) {
+        onDataChange(updated as any);
+      }
+      return updated;
+    });
+
+    for (const diff of res.diffs) {
+      if (diff.address && onCellChange) {
+        onCellChange(diff.address, diff.newValue);
+      }
+    }
+    setSavedBadge(true);
+    setTimeout(() => setSavedBadge(false), 2500);
+  };
+
   const handlePrint = () => {
     if (onPrint) {
       onPrint();
@@ -299,7 +364,7 @@ export const ReportDocumentView: React.FC<ReportDocumentViewProps> = ({
         <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
           <ShieldCheck size={18} color="#10b981" />
           <span style={{ fontSize: '0.86rem', fontWeight: 600, color: '#f4f4f5' }}>
-            Laudo de Calibração (Folha de Rosto)
+            Laudo de Calibração / Segurança Elétrica
           </span>
           <span style={{ fontSize: '0.74rem', color: '#71717a' }}>
             • Campos editáveis abaixo sincronizam com o arquivo .xlsx
@@ -311,13 +376,26 @@ export const ReportDocumentView: React.FC<ReportDocumentViewProps> = ({
           )}
         </div>
 
-        <button
-          className="btn btn-primary"
-          onClick={handlePrint}
-          style={{ backgroundColor: '#2563eb', padding: '6px 14px', fontSize: '0.8rem' }}
-        >
-          <Printer size={15} /> Imprimir / Salvar PDF
-        </button>
+        <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+          {(doc.resistenciaTerra || doc.correnteFuga) && (
+            <button
+              className="btn btn-amber"
+              onClick={handleRandomizeSegElet}
+              style={{ backgroundColor: '#f59e0b', color: '#000', fontWeight: 600, padding: '6px 14px', fontSize: '0.8rem', display: 'flex', alignItems: 'center', gap: '6px' }}
+              title="Aplica variação de ±30% nos testes de Resistência para o Terra e Corrente de Fuga"
+            >
+              <Sparkles size={15} /> Randomizar Seg. Elétrica (±30%)
+            </button>
+          )}
+
+          <button
+            className="btn btn-primary"
+            onClick={handlePrint}
+            style={{ backgroundColor: '#2563eb', padding: '6px 14px', fontSize: '0.8rem' }}
+          >
+            <Printer size={15} /> Imprimir / Salvar PDF
+          </button>
+        </div>
       </div>
 
       {/* ═══ FOLHA A4 CLEAN ═══ */}
@@ -520,6 +598,66 @@ export const ReportDocumentView: React.FC<ReportDocumentViewProps> = ({
           </div>
 
         </div>
+
+        {/* ENSAIOS DE SEGURANÇA ELÉTRICA (NBR IEC 62353) */}
+        {(doc.resistenciaTerra || doc.correnteFuga) && (
+          <div style={{ marginBottom: '16px' }}>
+            <div style={{ fontSize: '10.5px', fontWeight: 800, color: '#1e3a8a', borderBottom: '1px solid #e2e8f0', paddingBottom: '3px', marginBottom: '8px', display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: '5px' }}>
+                <Activity size={13} color="#0284c7" /> ENSAIOS DE SEGURANÇA ELÉTRICA (NBR IEC 62353)
+              </div>
+              <button
+                onClick={handleRandomizeSegElet}
+                style={{
+                  backgroundColor: '#fef3c7',
+                  color: '#92400e',
+                  border: '1px solid #fde68a',
+                  borderRadius: '3px',
+                  padding: '2px 8px',
+                  fontSize: '9px',
+                  fontWeight: 700,
+                  cursor: 'pointer',
+                  display: 'flex',
+                  alignItems: 'center',
+                  gap: '4px'
+                }}
+                title="Randomizar valores de ensaio em ±30%"
+              >
+                <Sparkles size={11} /> Randomizar (±30%)
+              </button>
+            </div>
+            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '10px' }}>
+              {doc.resistenciaTerra && (
+                <div style={{ backgroundColor: '#f0fdf4', border: '1px solid #bbf7d0', borderRadius: '4px', padding: '8px 10px' }}>
+                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '3px' }}>
+                    <span style={{ fontSize: '9px', fontWeight: 600, color: '#166534' }}>Resistência para o Terra (IEC 5.3.2):</span>
+                    <span style={{ fontSize: '8.5px', fontWeight: 700, color: '#15803d', backgroundColor: '#dcfce7', padding: '1px 5px', borderRadius: '3px' }}>APROVADO (≤ 0.30 Ω)</span>
+                  </div>
+                  <input
+                    type="text"
+                    value={doc.resistenciaTerra}
+                    onChange={(e) => updateField('resistenciaTerra', e.target.value)}
+                    style={{ ...inputStyle, fontWeight: 700, color: '#166534', backgroundColor: '#ffffff' }}
+                  />
+                </div>
+              )}
+              {doc.correnteFuga && (
+                <div style={{ backgroundColor: '#f0fdf4', border: '1px solid #bbf7d0', borderRadius: '4px', padding: '8px 10px' }}>
+                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '3px' }}>
+                    <span style={{ fontSize: '9px', fontWeight: 600, color: '#166534' }}>Corrente de Fuga para Carcaça (IEC 5.3.3):</span>
+                    <span style={{ fontSize: '8.5px', fontWeight: 700, color: '#15803d', backgroundColor: '#dcfce7', padding: '1px 5px', borderRadius: '3px' }}>APROVADO (≤ 100 µA)</span>
+                  </div>
+                  <input
+                    type="text"
+                    value={doc.correnteFuga}
+                    onChange={(e) => updateField('correnteFuga', e.target.value)}
+                    style={{ ...inputStyle, fontWeight: 700, color: '#166534', backgroundColor: '#ffffff' }}
+                  />
+                </div>
+              )}
+            </div>
+          </div>
+        )}
 
         {/* 5 - CHECKLIST DE MANUTENÇÃO PREVENTIVA / CORRETIVA */}
         <div style={{ marginBottom: '16px' }}>

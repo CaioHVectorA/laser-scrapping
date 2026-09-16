@@ -43,8 +43,10 @@ export async function loginToSystem(page: Page, user: string, pass: string): Pro
 /**
  * Extrai todos os campos de uma folha de impressão específica (402, 425, 440, 460, 465).
  */
-async function scrapePrintPage(page: Page, printPageId: string, osId: string, statusTabName: string): Promise<ScrapedItem> {
-  const printUrl = `https://medlaserbrasil.com.br/?page_id=${printPageId}&cod_registro=${osId}&print=Y`;
+async function scrapePrintPage(page: Page, printPageIdOrUrl: string, osId: string, statusTabName: string): Promise<ScrapedItem> {
+  const printUrl = printPageIdOrUrl.startsWith('http')
+    ? printPageIdOrUrl.replace(/^http:/, 'https:')
+    : `https://medlaserbrasil.com.br/?page_id=${printPageIdOrUrl}&cod_registro=${osId}&print=Y`;
   await page.goto(printUrl, { waitUntil: 'domcontentloaded' });
   await page.waitForTimeout(1000);
 
@@ -137,7 +139,21 @@ const STATUS_PAGE_MAP = [
  * Executa o fluxo principal de extração mapeando o DOM de page_id=343 para extrair as OSs de cada aba.
  */
 export async function runScraper(options: ScraperOptions): Promise<ScrapedItem[]> {
-  const { url, headless, timeoutMs = 30000, maxItems, browserType } = options;
+  const { url, headless, timeoutMs = 30000, browserType } = options;
+
+  const rawTarget = options.targetOsId?.trim() || '';
+  if (!rawTarget) {
+    throw new Error('Nenhuma Ordem de Serviço informada. O modo de varredura geral foi desativado. Por favor, informe a OS desejada.');
+  }
+
+  const targetIds = rawTarget
+    .split(/[,\s]+/)
+    .map(s => s.trim().replace(/^#/, ''))
+    .filter(Boolean);
+
+  if (targetIds.length === 0) {
+    throw new Error('Nenhum número de OS válido foi identificado. Por favor, informe ao menos uma OS (ex: 7588).');
+  }
 
   console.log(`🌐 Inicializando navegador (Headless: ${headless})...`);
 
@@ -151,7 +167,7 @@ export async function runScraper(options: ScraperOptions): Promise<ScrapedItem[]
 
   const context = await browser.newContext({
     viewport: { width: 1280, height: 800 },
-    userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (Chrome/120.0.0.0 Safari/537.36)'
+    userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
   });
 
   const page: Page = await context.newPage();
@@ -165,73 +181,125 @@ export async function runScraper(options: ScraperOptions): Promise<ScrapedItem[]
 
     await loginToSystem(page, config.systemUser, config.systemPassword);
 
-    await page.goto('https://medlaserbrasil.com.br/?page_id=343', { waitUntil: 'domcontentloaded' });
-    await page.waitForTimeout(2000);
+    console.log(`🎯 Modo focado por OS ativado. Total de OSs a pesquisar: ${targetIds.length} (${targetIds.join(', ')})...`);
 
-    // Mapeia todas as OSs agrupadas por painel de aba no DOM de page_id=343
-    const tabData = await page.evaluate((statusList) => {
-      const result: { tabName: string; printPageId: string; osIds: string[] }[] = [];
-      const tabLinks = Array.from(document.querySelectorAll<HTMLElement>('a[id*="-tab"]'));
+    let processedCount = 0;
+    const totalToProcess = targetIds.length;
 
-      for (const statusItem of statusList) {
-        const link = tabLinks.find(l => l.innerText.includes(statusItem.tabName));
-        if (link) {
-          const href = link.getAttribute('href');
-          const pane = href ? document.querySelector(href) : null;
-          const osIds: string[] = [];
-          if (pane) {
-            const rows = Array.from(pane.querySelectorAll<HTMLTableRowElement>('tr'));
-            for (const r of rows) {
-              const cells = Array.from(r.querySelectorAll<HTMLTableCellElement>('td')).map(c => c.innerText.trim());
-              if (cells.length >= 2 && /^\d+$/.test(cells[1])) {
-                osIds.push(cells[1]);
-              }
+    for (const targetId of targetIds) {
+      processedCount++;
+      console.log(`\n⏳ [${processedCount}/${totalToProcess}] Pesquisando OS #${targetId} no sistema MedLaser...`);
+
+      // 1. Navega para a página de ordens de serviço
+      await page.goto('https://medlaserbrasil.com.br/?page_id=343', { waitUntil: 'domcontentloaded' });
+      await page.waitForTimeout(1000);
+
+      // 2. Garante que o checkbox 'apenas_num_os' esteja marcado
+      await page.evaluate(() => {
+        const cb = document.querySelector<HTMLInputElement>('#apenas_num_os');
+        if (cb && !cb.checked) {
+          cb.checked = true;
+        }
+      });
+
+      // 3. Preenche o campo de filtro com a OS desejada
+      const filtroInput = page.locator('#filtro_page');
+      await filtroInput.waitFor({ state: 'visible', timeout: 5000 });
+      await filtroInput.fill('');
+      await filtroInput.fill(targetId);
+
+      // 4. Submete a pesquisa via Enter e aguarda navegação completa
+      console.log(`🔍 Enviando formulário de pesquisa para a OS #${targetId}...`);
+      await Promise.all([
+        page.waitForNavigation({ waitUntil: 'domcontentloaded', timeout: 15000 }).catch(() => {}),
+        filtroInput.press('Enter')
+      ]);
+      await page.waitForTimeout(1500);
+
+      // 5. Avalia os resultados da busca nas tabelas retornadas
+      const searchResult = await page.evaluate((osToFind) => {
+        const rows = Array.from(document.querySelectorAll('tr')).filter(r => {
+          const t = r.innerText || '';
+          return t.includes(osToFind);
+        });
+
+        for (const r of rows) {
+          // Procura link direto de impressão
+          const printLink = r.querySelector<HTMLAnchorElement>('a[href*="print=Y"], a[href*="imprimir_os"]');
+          const pane = r.closest('.tab-pane, [id^="tab-"]');
+          const paneId = pane ? pane.id : '';
+          const tabLink = paneId ? document.querySelector<HTMLElement>(`a[href="#${paneId}"]`) : null;
+          return {
+            found: true,
+            printUrl: printLink ? printLink.href : null,
+            tabName: tabLink ? tabLink.innerText.trim() : null
+          };
+        }
+
+        return { found: false, printUrl: null, tabName: null };
+      }, targetId);
+
+      let item: ScrapedItem | null = null;
+
+      // Se encontrou link direto no resultado da pesquisa:
+      if (searchResult.found && searchResult.printUrl) {
+        console.log(`📌 Link de impressão localizado diretamente para OS #${targetId}: ${searchResult.printUrl}`);
+        try {
+          item = await scrapePrintPage(page, searchResult.printUrl, targetId, searchResult.tabName || 'Geral');
+        } catch (err) {
+          console.warn(`⚠️ Falha ao abrir link direto, tentando rotas alternativas...`, err);
+        }
+      } else if (searchResult.found && searchResult.tabName) {
+        // Encontrou na aba mas sem link direto no <tr>
+        const foundTab = STATUS_PAGE_MAP.find(s => searchResult.tabName?.includes(s.tabName));
+        const printPageId = foundTab ? foundTab.printPageId : '465';
+        console.log(`📌 Aba identificada: "${searchResult.tabName}" (page_id=${printPageId}) para a OS #${targetId}.`);
+        try {
+          item = await scrapePrintPage(page, printPageId, targetId, searchResult.tabName);
+        } catch {}
+      }
+
+      // Se não encontrou ou falhou, tenta as páginas de impressão das abas (fallback robusto para OSs antigas)
+      if (!item || (!item.clienteNome && !item.equipamentoModelo)) {
+        console.log(`ℹ️ Testando páginas de impressão padrão para a OS #${targetId}...`);
+        const fallbackStatusList = [
+          { printPageId: '465', tabName: 'Entregue' },
+          { printPageId: '460', tabName: 'Finalizada' },
+          { printPageId: '440', tabName: 'Em execução' },
+          { printPageId: '425', tabName: 'Aguardando aprovação' },
+          { printPageId: '402', tabName: 'Aguardando Análise' }
+        ];
+
+        for (const fb of fallbackStatusList) {
+          try {
+            const candidate = await scrapePrintPage(page, fb.printPageId, targetId, fb.tabName);
+            if (candidate.clienteNome || candidate.equipamentoModelo) {
+              item = candidate;
+              console.log(`✅ OS #${targetId} recuperada com sucesso na aba "${fb.tabName}" (page_id=${fb.printPageId})!`);
+              break;
             }
-          }
-          result.push({ tabName: statusItem.tabName, printPageId: statusItem.printPageId, osIds });
+          } catch {}
         }
       }
 
-      return result;
-    }, STATUS_PAGE_MAP);
-
-    let totalToProcess = 0;
-    for (const group of tabData) {
-      totalToProcess += maxItems ? Math.min(group.osIds.length, maxItems) : group.osIds.length;
-      console.log(`📌 Aba "${group.tabName}" (page_id=${group.printPageId}): ${group.osIds.length} OSs identificadas.`);
-    }
-
-    console.log(`\n📄 Iniciando coleta das folhas de impressão de ${totalToProcess} OSs...`);
-
-    let processedCount = 0;
-
-    for (const group of tabData) {
-      console.log(`\n========================================`);
-      console.log(`📂 Processando ${group.osIds.length} OSs da aba "${group.tabName}" (page_id=${group.printPageId})...`);
-
-      const idsToProcess = maxItems ? group.osIds.slice(0, maxItems) : group.osIds;
-
-      for (const id of idsToProcess) {
-        processedCount++;
-        console.log(`⏳ [${processedCount}/${totalToProcess}] Extraindo OS #${id} (Aba: "${group.tabName}", page_id=${group.printPageId})...`);
-        try {
-          const item = await scrapePrintPage(page, group.printPageId, id, group.tabName);
-          scrapedItems.push(item);
-          if (options.onItemScraped) {
-            try {
-              await Promise.resolve(options.onItemScraped(item));
-            } catch (saveErr) {
-              console.warn(`⚠️ Erro ao salvar OS #${id} incrementalmente:`, saveErr);
-            }
+      if (item && (item.clienteNome || item.equipamentoModelo)) {
+        scrapedItems.push(item);
+        if (options.onItemScraped) {
+          try {
+            await Promise.resolve(options.onItemScraped(item));
+          } catch (saveErr) {
+            console.warn(`⚠️ Erro ao salvar OS #${targetId} incrementalmente:`, saveErr);
           }
-        } catch (err) {
-          console.error(`❌ Erro ao extrair folha de impressão da OS #${id}:`, err);
         }
+        console.log(`✅ OS #${targetId} extraída com SUCESSO: ${item.clienteNome || 'Cliente'} - ${item.equipamentoModelo || 'Equipamento'} (${item.situacao})`);
+      } else {
+        console.warn(`⚠️ Não foi possível encontrar dados válidos para a OS #${targetId}.`);
       }
     }
 
     console.log(`\n========================================`);
-    console.log(`✅ Raspagem finalizada com SUCESSO! Total de folhas de impressão extraídas: ${scrapedItems.length}`);
+    console.log(`🎉 Raspagem finalizada! Total extraído: ${scrapedItems.length}`);
+    return scrapedItems;
   } catch (error) {
     console.error('❌ Erro durante a execução da raspagem:', error);
     throw error;
@@ -243,6 +311,4 @@ export async function runScraper(options: ScraperOptions): Promise<ScrapedItem[]
       if (browser) await browser.close();
     } catch {}
   }
-
-  return scrapedItems;
 }
