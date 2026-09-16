@@ -1,6 +1,6 @@
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect, useRef, useMemo } from 'react';
 import { startScraper, subscribeScraperStream, getInstalledBrowsers, type DetectedBrowserInfo } from '../api.js';
-import { Play, Square, Terminal, Eye, EyeOff, Globe, Search, Target } from 'lucide-react';
+import { Play, Square, Terminal, Eye, EyeOff, Globe, Search, Target, Sparkles } from 'lucide-react';
 
 export const ScraperPanel: React.FC = () => {
   const [running, setRunning] = useState(false);
@@ -28,6 +28,17 @@ export const ScraperPanel: React.FC = () => {
     if (logTerminalRef.current) {
       logTerminalRef.current.scrollTop = logTerminalRef.current.scrollHeight;
     }
+  }, [logs]);
+
+  // Procura se há reconhecimento de serviço nos logs recentes
+  const lastRecognized = useMemo(() => {
+    for (let i = logs.length - 1; i >= 0; i--) {
+      const line = logs[i];
+      if (line.includes('[Reconhecimento de Serviço]')) {
+        return line.replace(/^.*?\[Reconhecimento de Serviço\]:\s*/, '');
+      }
+    }
+    return null;
   }, [logs]);
 
   const handleStart = async () => {
@@ -189,6 +200,25 @@ export const ScraperPanel: React.FC = () => {
           </button>
         </div>
       </div>
+
+      {/* Reconhecimento Explícito da OS Extraída */}
+      {lastRecognized && (
+        <div style={{
+          backgroundColor: 'rgba(5, 150, 105, 0.12)',
+          border: '1px solid rgba(5, 150, 105, 0.4)',
+          borderRadius: '8px',
+          padding: '12px 16px',
+          display: 'flex',
+          alignItems: 'center',
+          gap: '10px',
+          color: '#34d399',
+          fontSize: '0.86rem',
+          fontWeight: '600'
+        }}>
+          <Sparkles size={18} color="#34d399" />
+          <span>{lastRecognized}</span>
+        </div>
+      )}
 
       {/* Progress */}
       <div style={{ backgroundColor: '#18181b', border: '1px solid #27272a', borderRadius: '8px', padding: '14px 18px', display: 'flex', flexDirection: 'column', gap: '8px' }}>

@@ -4,7 +4,7 @@ import path from 'node:path';
 import { createRequire } from 'node:module';
 import { config } from './config.js';
 import { runScraper } from './scraper.js';
-import { saveToDatabase } from './db.js';
+import { saveToDatabase, ensureDbSchemaAndMigrate, detectServiceCategory } from './db.js';
 import { exportToExcel } from './excel.js';
 import { exportToCsv } from './csv.js';
 import { parseXlsx, randomizeMeasurements, updateCellValues } from './services/xlsxService.js';
@@ -50,32 +50,11 @@ function getDb() {
 
   rawDb.exec('PRAGMA journal_mode = WAL;');
 
-  // Garante a tabela ordens_servico no primeiro uso para evitar erro antes da raspagem
-  rawDb.exec(`
-    CREATE TABLE IF NOT EXISTS ordens_servico (
-      id TEXT PRIMARY KEY,
-      situacao TEXT,
-      data_entrada TEXT,
-      cliente_nome TEXT,
-      cliente_cpf_cnpj TEXT,
-      cliente_endereco TEXT,
-      cliente_telefones TEXT,
-      cliente_email TEXT,
-      equipamento_modelo TEXT,
-      equipamento_codigo TEXT,
-      equipamento_linha_uso TEXT,
-      equipamento_dimensoes TEXT,
-      equipamento_descricao TEXT,
-      equipamento_acessorios TEXT,
-      servico_tipo TEXT,
-      tecnico_responsavel TEXT,
-      descricao_problema TEXT,
-      valor_orcamento REAL,
-      observacoes TEXT,
-      laudo_tecnico TEXT,
-      scraped_at TEXT
-    );
-  `);
+  try {
+    ensureDbSchemaAndMigrate(rawDb);
+  } catch (migErr) {
+    console.warn('⚠️ Erro ao migrar schema SQLite em getDb:', migErr);
+  }
 
   if (typeof rawDb.query === 'function') {
     db = rawDb;
@@ -149,7 +128,8 @@ async function handleRequest(req: Request): Promise<Response> {
       const database = getDb();
       const search = url.searchParams.get('search') || '';
       const situacao = url.searchParams.get('situacao') || '';
-      const limit = parseInt(url.searchParams.get('limit') || '100', 10);
+      const categoria = url.searchParams.get('categoria') || '';
+      const limit = parseInt(url.searchParams.get('limit') || '150', 10);
       const offset = parseInt(url.searchParams.get('offset') || '0', 10);
 
       let query = 'SELECT * FROM ordens_servico WHERE 1=1';
@@ -162,12 +142,32 @@ async function handleRequest(req: Request): Promise<Response> {
         params.push(`%${situacao}%`);
       }
 
+      if (categoria && categoria !== 'Todas' && categoria !== 'Todos') {
+        if (categoria === 'calibracao') {
+          query += ' AND (categoria_servico LIKE "%Calibração%" OR servico_tipo LIKE "%calib%")';
+          countQuery += ' AND (categoria_servico LIKE "%Calibração%" OR servico_tipo LIKE "%calib%")';
+        } else if (categoria === 'seguranca_eletrica') {
+          query += ' AND (categoria_servico LIKE "%Segurança%" OR servico_tipo LIKE "%seg%")';
+          countQuery += ' AND (categoria_servico LIKE "%Segurança%" OR servico_tipo LIKE "%seg%")';
+        } else if (categoria === 'ambos') {
+          query += ' AND (categoria_servico LIKE "%+%" OR (categoria_servico LIKE "%Calibração%" AND categoria_servico LIKE "%Segurança%"))';
+          countQuery += ' AND (categoria_servico LIKE "%+%" OR (categoria_servico LIKE "%Calibração%" AND categoria_servico LIKE "%Segurança%"))';
+        } else if (categoria === 'manutencao' || categoria === 'outros') {
+          query += ' AND (categoria_servico NOT LIKE "%Calibração%" AND categoria_servico NOT LIKE "%Segurança%")';
+          countQuery += ' AND (categoria_servico NOT LIKE "%Calibração%" AND categoria_servico NOT LIKE "%Segurança%")';
+        } else {
+          query += ' AND categoria_servico LIKE ?';
+          countQuery += ' AND categoria_servico LIKE ?';
+          params.push(`%${categoria}%`);
+        }
+      }
+
       if (search) {
         const s = `%${search}%`;
-        const searchClause = ' AND (id LIKE ? OR cliente_nome LIKE ? OR cliente_cpf_cnpj LIKE ? OR equipamento_modelo LIKE ? OR equipamento_codigo LIKE ? OR tecnico_responsavel LIKE ?)';
+        const searchClause = ' AND (id LIKE ? OR cliente_nome LIKE ? OR cliente_cpf_cnpj LIKE ? OR equipamento_modelo LIKE ? OR equipamento_codigo LIKE ? OR tecnico_responsavel LIKE ? OR categoria_servico LIKE ?)';
         query += searchClause;
         countQuery += searchClause;
-        params.push(s, s, s, s, s, s);
+        params.push(s, s, s, s, s, s, s);
       }
 
       query += ' ORDER BY CAST(id AS INTEGER) DESC LIMIT ? OFFSET ?';
@@ -176,9 +176,81 @@ async function handleRequest(req: Request): Promise<Response> {
       const total = countRow?.cnt || 0;
       const items = database.query(query).all(...params, limit, offset);
 
-      return jsonResponse({ items, total });
+      // Obter contagens por categoria para os botões de filtro da UI
+      let stats = { total: 0, calibracao: 0, segurancaEletrica: 0, ambos: 0, outros: 0 };
+      try {
+        const allCats = database.query('SELECT categoria_servico, servico_tipo FROM ordens_servico').all() as any[];
+        stats.total = allCats.length;
+        for (const row of allCats) {
+          const cat = String(row.categoria_servico || '');
+          const serv = String(row.servico_tipo || '').toLowerCase();
+          const hasCalib = cat.includes('Calibração') || serv.includes('calib');
+          const hasSeg = cat.includes('Segurança') || serv.includes('seg');
+
+          if (hasCalib && hasSeg) {
+            stats.ambos++;
+            stats.calibracao++;
+            stats.segurancaEletrica++;
+          } else if (hasCalib) {
+            stats.calibracao++;
+          } else if (hasSeg) {
+            stats.segurancaEletrica++;
+          } else {
+            stats.outros++;
+          }
+        }
+      } catch {}
+
+      return jsonResponse({ items, total, stats });
     } catch (err: any) {
       console.error('❌ /api/orders error:', err);
+      return errorResponse(err.message);
+    }
+  }
+
+  // ── Database: create / save order ──
+  if (reqPath === '/api/orders' && req.method === 'POST') {
+    try {
+      const body = await req.json();
+      if (!body.id) {
+        return errorResponse('Número da OS é obrigatório', 400);
+      }
+
+      const servicoTipo = body.servico_tipo || body.servicoTipo || '';
+      const descProb = body.descricao_problema || body.descricaoProblema || '';
+      const obs = body.observacoes || '';
+      const catExplicit = body.categoria_servico || body.categoriaServico;
+      const categoria = catExplicit || detectServiceCategory(servicoTipo, descProb, obs).label;
+
+      const item: any = {
+        id: String(body.id).trim(),
+        situacao: body.situacao || 'Aguardando Análise',
+        dataEntrada: body.data_entrada || body.dataEntrada || new Date().toLocaleDateString('pt-BR'),
+        clienteNome: body.cliente_nome || body.clienteNome || '',
+        clienteCpfCnpj: body.cliente_cpf_cnpj || body.clienteCpfCnpj || '',
+        clienteEndereco: body.cliente_endereco || body.clienteEndereco || '',
+        clienteTelefones: body.cliente_telefones || body.clienteTelefones || '',
+        clienteEmail: body.cliente_email || body.clienteEmail || '',
+        equipamentoModelo: body.equipamento_modelo || body.equipamentoModelo || '',
+        equipamentoCodigo: body.equipamento_codigo || body.equipamentoCodigo || '',
+        equipamentoLinhaUso: body.equipamento_linha_uso || body.equipamentoLinhaUso || 'Laser',
+        equipamentoDimensoes: body.equipamento_dimensoes || body.equipamentoDimensoes || '',
+        equipamentoDescricao: body.equipamento_descricao || body.equipamentoDescricao || '',
+        equipamentoAcessorios: body.equipamento_acessorios || body.equipamentoAcessorios || '',
+        servicoTipo,
+        tecnicoResp: body.tecnico_responsavel || body.tecnicoResp || 'Em aberto',
+        descricaoProblema: descProb,
+        valorOrcamento: body.valor_orcamento || body.valorOrcamento || 0,
+        observacoes: obs,
+        laudoTecnico: body.laudo_tecnico || body.laudoTecnico || '',
+        categoriaServico: categoria,
+        scrapedAt: body.scraped_at || body.scrapedAt || new Date().toLocaleString('pt-BR')
+      };
+
+      await saveToDatabase([item], config.dbFilePath);
+      return jsonResponse({ success: true, item });
+    } catch (err: any) {
+      console.error('❌ /api/orders POST error:', err);
       return errorResponse(err.message);
     }
   }
@@ -191,6 +263,59 @@ async function handleRequest(req: Request): Promise<Response> {
       const row = database.query('SELECT * FROM ordens_servico WHERE id = ?').get(id);
       return row ? jsonResponse(row) : errorResponse('OS não encontrada', 404);
     } catch (err: any) {
+      return errorResponse(err.message);
+    }
+  }
+
+  // ── Database: update order ──
+  if (reqPath.startsWith('/api/orders/') && (req.method === 'PUT' || req.method === 'PATCH')) {
+    try {
+      const id = reqPath.split('/').pop();
+      const body = await req.json();
+      const database = getDb();
+      const existing = database.query('SELECT * FROM ordens_servico WHERE id = ?').get(id) as any;
+      if (!existing) {
+        return errorResponse('OS não encontrada para atualização', 404);
+      }
+
+      const servicoTipo = body.servico_tipo ?? body.servicoTipo ?? existing.servico_tipo;
+      const descProb = body.descricao_problema ?? body.descricaoProblema ?? existing.descricao_problema;
+      const obs = body.observacoes ?? existing.observacoes;
+      const categoria = body.categoria_servico ?? body.categoriaServico ?? (
+        (body.servico_tipo || body.descricao_problema)
+          ? detectServiceCategory(servicoTipo, descProb, obs).label
+          : existing.categoria_servico
+      );
+
+      const item: any = {
+        id: String(id),
+        situacao: body.situacao ?? existing.situacao,
+        dataEntrada: body.data_entrada ?? body.dataEntrada ?? existing.data_entrada,
+        clienteNome: body.cliente_nome ?? body.clienteNome ?? existing.cliente_nome,
+        clienteCpfCnpj: body.cliente_cpf_cnpj ?? body.clienteCpfCnpj ?? existing.cliente_cpf_cnpj,
+        clienteEndereco: body.cliente_endereco ?? body.clienteEndereco ?? existing.cliente_endereco,
+        clienteTelefones: body.cliente_telefones ?? body.clienteTelefones ?? existing.cliente_telefones,
+        clienteEmail: body.cliente_email ?? body.clienteEmail ?? existing.cliente_email,
+        equipamentoModelo: body.equipamento_modelo ?? body.equipamentoModelo ?? existing.equipamento_modelo,
+        equipamentoCodigo: body.equipamento_codigo ?? body.equipamentoCodigo ?? existing.equipamento_codigo,
+        equipamentoLinhaUso: body.equipamento_linha_uso ?? body.equipamentoLinhaUso ?? existing.equipamento_linha_uso,
+        equipamentoDimensoes: body.equipamento_dimensoes ?? body.equipamentoDimensoes ?? existing.equipamento_dimensoes,
+        equipamentoDescricao: body.equipamento_descricao ?? body.equipamentoDescricao ?? existing.equipamento_descricao,
+        equipamentoAcessorios: body.equipamento_acessorios ?? body.equipamentoAcessorios ?? existing.equipamento_acessorios,
+        servicoTipo,
+        tecnicoResp: body.tecnico_responsavel ?? body.tecnicoResp ?? existing.tecnico_responsavel,
+        descricaoProblema: descProb,
+        valorOrcamento: body.valor_orcamento ?? body.valorOrcamento ?? existing.valor_orcamento,
+        observacoes: obs,
+        laudoTecnico: body.laudo_tecnico ?? body.laudoTecnico ?? existing.laudo_tecnico,
+        categoriaServico: categoria,
+        scrapedAt: existing.scraped_at || new Date().toLocaleString('pt-BR')
+      };
+
+      await saveToDatabase([item], config.dbFilePath);
+      return jsonResponse({ success: true, item });
+    } catch (err: any) {
+      console.error('❌ /api/orders PUT error:', err);
       return errorResponse(err.message);
     }
   }
@@ -542,6 +667,7 @@ if (typeof (globalThis as any).Bun !== 'undefined' && (globalThis as any).Bun?.s
   (globalThis as any).Bun.serve({
     port: PORT,
     fetch: handleRequest,
+    idleTimeout: 0,
   });
   console.log(`✅ Servidor LaserWidget rodando via Bun em http://localhost:${PORT}`);
 } else {

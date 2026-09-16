@@ -1,6 +1,7 @@
 import { type Browser, type Page } from 'playwright';
 import { config } from './config.js';
 import { launchBrowserWithFallback } from './browserLauncher.js';
+import { detectServiceCategory } from './db.js';
 import type { ScrapedItem, ScraperOptions } from './types/index.js';
 
 /**
@@ -101,14 +102,14 @@ async function scrapePrintPage(page: Page, printPageIdOrUrl: string, osId: strin
       clienteEndereco: result['Endereço'] || '',
       clienteTelefones: result['Telefones'] || '',
       clienteEmail: result['email'] || '',
-      equipamentoModelo: result['Modelo'] || '',
-      equipamentoCodigo: result['Código'] || '',
-      equipamentoLinhaUso: result['Linha de uso'] || '',
+      equipamentoModelo: (result['Modelo'] || '').split('\t')[0].trim(),
+      equipamentoCodigo: (result['Código'] || '').split('\t')[0].trim(),
+      equipamentoLinhaUso: (result['Linha de uso'] || '').split('\t')[0].trim(),
       equipamentoDimensoes: result['Dimensões'] || '',
       equipamentoDescricao: result['Descrição'] || '',
       equipamentoAcessorios: result['Acessórios'] || '',
-      servicoTipo: result['Tipo de Serviço'] || '',
-      tecnicoResp: result['Técnico Responsável'] || '',
+      servicoTipo: (result['Tipo de Serviço'] || '').split('\t')[0].split('\n')[0].trim(),
+      tecnicoResp: (result['Técnico Responsável'] || '').split('\t')[0].split('\n')[0].trim(),
       descricaoProblema: result['Descrição do Problema'] || '',
       valorOrcamento,
       observacoes: result['Observações'] || '',
@@ -116,9 +117,12 @@ async function scrapePrintPage(page: Page, printPageIdOrUrl: string, osId: strin
     };
   }, statusTabName);
 
+  const detected = detectServiceCategory(details.servicoTipo, details.descricaoProblema, details.observacoes);
+
   return {
     id: osId,
     ...details,
+    categoriaServico: detected.label,
     scrapedAt
   };
 }
@@ -291,7 +295,8 @@ export async function runScraper(options: ScraperOptions): Promise<ScrapedItem[]
             console.warn(`⚠️ Erro ao salvar OS #${targetId} incrementalmente:`, saveErr);
           }
         }
-        console.log(`✅ OS #${targetId} extraída com SUCESSO: ${item.clienteNome || 'Cliente'} - ${item.equipamentoModelo || 'Equipamento'} (${item.situacao})`);
+        console.log(`🏷️ [Reconhecimento de Serviço]: OS #${targetId} identificada como "${item.categoriaServico || 'Geral'}" (Serviço: ${item.servicoTipo || 'Não especificado'})`);
+        console.log(`✅ OS #${targetId} extraída com SUCESSO: ${item.clienteNome || 'Cliente'} - ${item.equipamentoModelo || 'Equipamento'} | [${item.categoriaServico}] (${item.situacao})`);
       } else {
         console.warn(`⚠️ Não foi possível encontrar dados válidos para a OS #${targetId}.`);
       }

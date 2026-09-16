@@ -30,6 +30,8 @@ export interface ScrapedItem {
   observacoes: string;
   laudoTecnico: string;
 
+  categoriaServico?: string;
+
   // Metadados
   scrapedAt: string;
 }

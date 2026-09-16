@@ -21,6 +21,7 @@ export interface DbOrder {
   valor_orcamento?: number;
   observacoes?: string;
   laudo_tecnico?: string;
+  categoria_servico?: string;
   scraped_at?: string;
 }
 

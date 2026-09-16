@@ -352,7 +352,12 @@ export async function launchBrowserWithFallback(options: BrowserLaunchOptions): 
     onLog = console.log,
   } = options;
 
+  const launchTimeout = options.timeoutMs ? Math.min(options.timeoutMs, 15000) : 15000;
   const args = ['--no-sandbox', '--disable-setuid-sandbox'];
+  if (!headless) {
+    args.push('--start-maximized');
+  }
+
   const isWin = process.platform === 'win32';
   const standardPaths = getStandardBrowserPaths();
 
@@ -365,6 +370,7 @@ export async function launchBrowserWithFallback(options: BrowserLaunchOptions): 
         executablePath: explicitPath,
         headless,
         args,
+        timeout: launchTimeout,
       });
       onLog(`✅ Navegador configurado iniciado com sucesso!`);
       return browser;
@@ -378,14 +384,14 @@ export async function launchBrowserWithFallback(options: BrowserLaunchOptions): 
     if (channelPreference === 'chromium') {
       try {
         onLog(`🌐 Tentando Chromium do Playwright...`);
-        return await chromium.launch({ headless, args });
+        return await chromium.launch({ headless, args, timeout: launchTimeout });
       } catch (err: any) {
         onLog(`⚠️ Chromium padrão não disponível (${err.message}).`);
       }
     } else {
       try {
         onLog(`🌐 Tentando canal especificado "${channelPreference}"...`);
-        return await chromium.launch({ channel: channelPreference, headless, args });
+        return await chromium.launch({ channel: channelPreference, headless, args, timeout: launchTimeout });
       } catch (err: any) {
         onLog(`⚠️ Canal "${channelPreference}" falhou (${err.message}).`);
       }
@@ -400,87 +406,87 @@ export async function launchBrowserWithFallback(options: BrowserLaunchOptions): 
   if (fileExists(directChromium)) {
     attempts.push({
       name: `Chromium Local do LaserWidget (${directChromium})`,
-      launch: () => chromium.launch({ executablePath: directChromium, headless, args }),
+      launch: () => chromium.launch({ executablePath: directChromium, headless, args, timeout: launchTimeout }),
     });
   }
 
   if (isWin) {
-    // B. Microsoft Edge via caminho direto no Windows (evita falhas de registro do canal)
-    const edgePaths = (standardPaths.msedge || []).filter(fileExists);
-    for (const ep of edgePaths) {
-      attempts.push({
-        name: `Microsoft Edge nativo (${ep})`,
-        launch: () => chromium.launch({ executablePath: ep, headless, args }),
-      });
-    }
-
-    // C. Microsoft Edge via canal Playwright
+    // 1º: Google Chrome via canal oficial (mais rápido e estável para automação no Windows)
     attempts.push({
-      name: 'Microsoft Edge (canal do Windows)',
-      launch: () => chromium.launch({ channel: 'msedge', headless, args }),
+      name: 'Google Chrome (canal do sistema)',
+      launch: () => chromium.launch({ channel: 'chrome', headless, args, timeout: launchTimeout }),
     });
 
-    // D. Google Chrome via caminho direto
+    // 2º: Microsoft Edge via canal Playwright
+    attempts.push({
+      name: 'Microsoft Edge (canal do Windows)',
+      launch: () => chromium.launch({ channel: 'msedge', headless, args, timeout: launchTimeout }),
+    });
+
+    // 3º: Google Chrome via caminho direto
     const chromePaths = (standardPaths.chrome || []).filter(fileExists);
     for (const cp of chromePaths) {
       attempts.push({
         name: `Google Chrome (${cp})`,
-        launch: () => chromium.launch({ executablePath: cp, headless, args }),
+        launch: () => chromium.launch({ executablePath: cp, headless, args, timeout: launchTimeout }),
       });
     }
 
-    // E. Google Chrome via canal Playwright
-    attempts.push({
-      name: 'Google Chrome (canal do sistema)',
-      launch: () => chromium.launch({ channel: 'chrome', headless, args }),
-    });
+    // 4º: Microsoft Edge via caminho direto
+    const edgePaths = (standardPaths.msedge || []).filter(fileExists);
+    for (const ep of edgePaths) {
+      attempts.push({
+        name: `Microsoft Edge nativo (${ep})`,
+        launch: () => chromium.launch({ executablePath: ep, headless, args, timeout: launchTimeout }),
+      });
+    }
 
-    // F. Brave Browser via caminho direto
+    // 5º: Brave Browser via caminho direto
     const bravePaths = (standardPaths.brave || []).filter(fileExists);
     for (const bp of bravePaths) {
       attempts.push({
         name: `Brave Browser (${bp})`,
-        launch: () => chromium.launch({ executablePath: bp, headless, args }),
+        launch: () => chromium.launch({ executablePath: bp, headless, args, timeout: launchTimeout }),
       });
     }
 
-    // G. Playwright Chromium em %LOCALAPPDATA%\ms-playwright
+    // 6º: Playwright Chromium em %LOCALAPPDATA%\ms-playwright
     try {
       const pwPath = chromium.executablePath();
       if (fileExists(pwPath)) {
         attempts.push({
           name: 'Chromium do Playwright (%LOCALAPPDATA%)',
-          launch: () => chromium.launch({ headless, args }),
+          launch: () => chromium.launch({ headless, args, timeout: launchTimeout }),
         });
       }
     } catch {}
   } else {
     // Linux / macOS
+    attempts.push({
+      name: 'Google Chrome',
+      launch: () => chromium.launch({ channel: 'chrome', headless, args, timeout: launchTimeout }),
+    });
+
+    attempts.push({
+      name: 'Microsoft Edge',
+      launch: () => chromium.launch({ channel: 'msedge', headless, args, timeout: launchTimeout }),
+    });
+
     try {
       const pwPath = chromium.executablePath();
       if (fileExists(pwPath)) {
         attempts.push({
           name: 'Chromium do Playwright',
-          launch: () => chromium.launch({ headless, args }),
+          launch: () => chromium.launch({ headless, args, timeout: launchTimeout }),
         });
       }
     } catch {}
-
-    attempts.push({
-      name: 'Google Chrome',
-      launch: () => chromium.launch({ channel: 'chrome', headless, args }),
-    });
-
-    attempts.push({
-      name: 'Microsoft Edge',
-      launch: () => chromium.launch({ channel: 'msedge', headless, args }),
-    });
 
     const sysChrome = findFirstExistingPath(standardPaths.chrome || []);
     if (sysChrome) {
       attempts.push({
         name: `Binário do sistema (${sysChrome})`,
-        launch: () => chromium.launch({ executablePath: sysChrome, headless, args }),
+        launch: () => chromium.launch({ executablePath: sysChrome, headless, args, timeout: launchTimeout }),
       });
     }
   }

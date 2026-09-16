@@ -1,19 +1,48 @@
 const API_BASE = 'http://localhost:3001';
 
-// ─── Database ───────────────────────────────────────────────────────────
+export interface OrderStats {
+  total: number;
+  calibracao: number;
+  segurancaEletrica: number;
+  ambos: number;
+  outros: number;
+}
+
 export async function getOrders(filters: {
   search?: string;
   situacao?: string;
+  categoria?: string;
   limit?: number;
   offset?: number;
-}): Promise<{ items: any[]; total: number }> {
+}): Promise<{ items: any[]; total: number; stats?: OrderStats }> {
   const params = new URLSearchParams();
   if (filters.search) params.set('search', filters.search);
   if (filters.situacao) params.set('situacao', filters.situacao);
+  if (filters.categoria) params.set('categoria', filters.categoria);
   if (filters.limit) params.set('limit', String(filters.limit));
   if (filters.offset) params.set('offset', String(filters.offset));
 
   const res = await fetch(`${API_BASE}/api/orders?${params}`);
+  if (!res.ok) throw new Error(await res.text());
+  return res.json();
+}
+
+export async function saveOrder(order: Record<string, any>) {
+  const res = await fetch(`${API_BASE}/api/orders`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(order),
+  });
+  if (!res.ok) throw new Error(await res.text());
+  return res.json();
+}
+
+export async function updateOrder(id: string, order: Record<string, any>) {
+  const res = await fetch(`${API_BASE}/api/orders/${id}`, {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(order),
+  });
   if (!res.ok) throw new Error(await res.text());
   return res.json();
 }
