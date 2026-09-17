@@ -1,8 +1,12 @@
 import React, { useState, useEffect, useRef, useMemo } from 'react';
 import { startScraper, subscribeScraperStream, getInstalledBrowsers, type DetectedBrowserInfo } from '../api.js';
-import { Play, Square, Terminal, Eye, EyeOff, Globe, Search, Target, Sparkles } from 'lucide-react';
+import { Play, Square, Terminal, Eye, EyeOff, Globe, Search, Target, Sparkles, Sliders, Zap, CheckCircle2 } from 'lucide-react';
 
-export const ScraperPanel: React.FC = () => {
+interface ScraperPanelProps {
+  onOpenInOperation?: (os: any) => void;
+}
+
+export const ScraperPanel: React.FC<ScraperPanelProps> = ({ onOpenInOperation }) => {
   const [running, setRunning] = useState(false);
   const [headless, setHeadless] = useState(true);
   const [targetOs, setTargetOs] = useState('');
@@ -39,6 +43,18 @@ export const ScraperPanel: React.FC = () => {
       }
     }
     return null;
+  }, [logs]);
+
+  const lastExtractedOs = useMemo(() => {
+    for (let i = logs.length - 1; i >= 0; i--) {
+      const match = logs[i].match(/OS #(\d+) extraída com SUCESSO/i) || logs[i].match(/OS #(\d+) identificada como/i);
+      if (match) return match[1];
+    }
+    return targetOs.trim() || null;
+  }, [logs, targetOs]);
+
+  const hasSuccessLog = useMemo(() => {
+    return logs.some(l => l.includes('extraída com SUCESSO') || l.includes('Raspagem finalizada!'));
   }, [logs]);
 
   const handleStart = async () => {
@@ -217,6 +233,63 @@ export const ScraperPanel: React.FC = () => {
         }}>
           <Sparkles size={18} color="#34d399" />
           <span>{lastRecognized}</span>
+        </div>
+      )}
+
+      {/* Botão de Ação Rápida para Abrir na Operação */}
+      {hasSuccessLog && lastExtractedOs && !running && (
+        <div style={{
+          backgroundColor: 'rgba(245, 158, 11, 0.12)',
+          border: '1px solid rgba(245, 158, 11, 0.4)',
+          borderRadius: '8px',
+          padding: '12px 18px',
+          display: 'flex',
+          alignItems: 'center',
+          justifyContent: 'space-between',
+          flexWrap: 'wrap',
+          gap: '12px'
+        }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
+            <Zap size={20} color="#fbbf24" />
+            <div>
+              <div style={{ color: '#fbbf24', fontWeight: '700', fontSize: '0.92rem' }}>
+                OS #{lastExtractedOs} extraída e pronta para a Central de Operação!
+              </div>
+              <div style={{ color: '#a1a1aa', fontSize: '0.78rem' }}>
+                Clique para abrir a planilha e preencher automaticamente os dados do certificado.
+              </div>
+            </div>
+          </div>
+          {onOpenInOperation && (
+            <button
+              className="btn btn-primary"
+              style={{
+                padding: '8px 18px',
+                backgroundColor: '#f59e0b',
+                color: '#000',
+                fontWeight: '700',
+                display: 'flex',
+                alignItems: 'center',
+                gap: '8px',
+                fontSize: '0.85rem'
+              }}
+              onClick={async () => {
+                try {
+                  const res = await fetch(`http://localhost:3001/api/orders/${lastExtractedOs}`);
+                  if (res.ok) {
+                    const data = await res.json();
+                    onOpenInOperation(data);
+                  } else {
+                    onOpenInOperation({ id: lastExtractedOs });
+                  }
+                } catch {
+                  onOpenInOperation({ id: lastExtractedOs });
+                }
+              }}
+            >
+              <Sliders size={16} /> Abrir OS #{lastExtractedOs} na Operação
+            </button>
+          )}
         </div>
       )}
 

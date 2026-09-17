@@ -359,6 +359,19 @@ export async function launchBrowserWithFallback(options: BrowserLaunchOptions): 
   }
 
   const isWin = process.platform === 'win32';
+  const isBun = typeof (globalThis as any).Bun !== 'undefined' || !!(process as any).versions?.bun;
+
+  if (isWin && isBun) {
+    onLog('❌ ERRO CRÍTICO: O Playwright não funciona no Windows diretamente sob o runtime Bun.');
+    onLog('💡 O Playwright necessita de comunicação via pipes IPC suportada nativamente pelo Node.js/TSX.');
+    onLog('👉 Solução: Inicie o backend com Node.js (ex: "npx tsx src/server.ts" ou "npm run app").');
+    throw new Error(
+      'Incompatibilidade Playwright + Bun no Windows detectada!\n' +
+      'O runtime Bun no Windows possui uma limitação de sistema com pipes IPC de depuração (issues #27977 / #31105).\n' +
+      'Por favor, execute o servidor via Node.js / TSX (ex: "npx tsx src/server.ts" ou "npm run app").'
+    );
+  }
+
   const standardPaths = getStandardBrowserPaths();
 
   // 1. Tentar caminho customizado se informado
@@ -511,7 +524,7 @@ export async function launchBrowserWithFallback(options: BrowserLaunchOptions): 
   try {
     const downloadedPath = await downloadChromiumDirectly(onLog);
     onLog(`🌐 Inicializando Chromium portátil em ${downloadedPath}...`);
-    return await chromium.launch({ executablePath: downloadedPath, headless, args });
+    return await chromium.launch({ executablePath: downloadedPath, headless, args, timeout: launchTimeout });
   } catch (downloadErr: any) {
     onLog(`❌ Falha no download automático do Chromium: ${downloadErr.message}`);
   }

@@ -664,6 +664,11 @@ console.log(`🚀 LaserWidget API Server starting on http://localhost:${PORT}`);
 console.log(`🗄️  SQLite: ${config.dbFilePath}`);
 
 if (typeof (globalThis as any).Bun !== 'undefined' && (globalThis as any).Bun?.serve) {
+  if (process.platform === 'win32') {
+    console.warn('⚠️ ATENÇÃO: Servidor iniciado via Bun no Windows.');
+    console.warn('⚠️ O Playwright tem incompatibilidade com o Bun no Windows (pipes de depuração travam).');
+    console.warn('👉 Para a automação de raspagem funcionar perfeitamente, inicie com Node/TSX: npx tsx src/server.ts');
+  }
   (globalThis as any).Bun.serve({
     port: PORT,
     fetch: handleRequest,

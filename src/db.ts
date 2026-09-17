@@ -108,9 +108,9 @@ export async function ensureDbSchemaAndMigrate(db: any): Promise<void> {
   try {
     let rows: any[] = [];
     if (typeof db.query === 'function') {
-      rows = db.query('SELECT id, servico_tipo, descricao_problema, observacoes FROM ordens_servico WHERE categoria_servico IS NULL OR categoria_servico = ""').all();
+      rows = db.query("SELECT id, servico_tipo, descricao_problema, observacoes FROM ordens_servico WHERE categoria_servico IS NULL OR categoria_servico = ''").all();
     } else if (typeof db.prepare === 'function') {
-      rows = db.prepare('SELECT id, servico_tipo, descricao_problema, observacoes FROM ordens_servico WHERE categoria_servico IS NULL OR categoria_servico = ""').all();
+      rows = db.prepare("SELECT id, servico_tipo, descricao_problema, observacoes FROM ordens_servico WHERE categoria_servico IS NULL OR categoria_servico = ''").all();
     }
 
     if (rows && rows.length > 0) {

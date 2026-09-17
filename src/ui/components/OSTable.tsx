@@ -27,7 +27,8 @@ import {
   Edit2,
   Save,
   Layers,
-  AlertCircle
+  AlertCircle,
+  Sliders
 } from 'lucide-react';
 
 const STATUS_OPTIONS = [
@@ -134,7 +135,11 @@ const initialNewOsData = {
   laudo_tecnico: ''
 };
 
-export const OSTable: React.FC = () => {
+interface OSTableProps {
+  onOpenInOperation?: (os: any) => void;
+}
+
+export const OSTable: React.FC<OSTableProps> = ({ onOpenInOperation }) => {
   const [orders, setOrders] = useState<any[]>([]);
   const [total, setTotal] = useState(0);
   const [loading, setLoading] = useState(true);
@@ -678,6 +683,16 @@ export const OSTable: React.FC = () => {
                     {/* AÇÕES REFORÇADAS */}
                     <td style={{ textAlign: 'center' }}>
                       <div style={{ display: 'flex', gap: '6px', justifyContent: 'center' }}>
+                        {onOpenInOperation && (
+                          <button
+                            className="btn btn-primary"
+                            style={{ padding: '4px 9px', fontSize: '0.75rem', display: 'flex', alignItems: 'center', gap: '4px', backgroundColor: '#d97706', borderColor: '#b45309' }}
+                            onClick={() => onOpenInOperation(os)}
+                            title="Abrir e Vincular esta OS na Central de Operação"
+                          >
+                            <Sliders size={13} /> Operação
+                          </button>
+                        )}
                         <button
                           className="btn btn-amber"
                           style={{ padding: '4px 9px', fontSize: '0.75rem', display: 'flex', alignItems: 'center', gap: '4px' }}
@@ -791,6 +806,18 @@ export const OSTable: React.FC = () => {
               )}
             </div>
             <div className="modal-footer">
+              {onOpenInOperation && (
+                <button
+                  className="btn btn-primary"
+                  style={{ display: 'flex', alignItems: 'center', gap: '6px', backgroundColor: '#d97706', borderColor: '#b45309' }}
+                  onClick={() => {
+                    onOpenInOperation(selectedOrder);
+                    setSelectedOrder(null);
+                  }}
+                >
+                  <Sliders size={15} /> Abrir na Operação
+                </button>
+              )}
               <button
                 className="btn btn-secondary"
                 onClick={() => {

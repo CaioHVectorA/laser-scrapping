@@ -6,3 +6,43 @@
 [0m[33m[Bun.serve][0m[2m:[0m request timed out after 10 seconds. Pass [2m[36m`idleTimeout`[0m to configure.
 ℹ️ Microsoft Edge nativo (C:\Program Files (x86)\Microsoft\Edge\Application\msedge.exe) não pôde ser iniciado: launch: Timeout 180000ms exceeded.
 🌐 [2/5] Tentando iniciar Microsoft Edge (canal do Windows)...
+🚀 LaserWidget API Server starting on http://localhost:3001
+🗄️  SQLite: C:\Users\caihe\Documents\develop\laser-scrapping\output\ordens_servico.sqlite
+✅ Servidor LaserWidget rodando via Bun em http://localhost:3001
+[main] Backend encerrado com código null
+🚀 LaserWidget API Server starting on http://localhost:3001
+🗄️  SQLite: C:\Users\caihe\Documents\develop\laser-scrapping\output\ordens_servico.sqlite
+❌ Uncaught Exception protegida no backend: Error: listen EADDRINUSE: address already in use :::3001
+[90m    at Server.setupListenHandle [as _listen2] (node:net:2008:16)[39m
+[90m    at listenInCluster (node:net:2065:12)[39m
+[90m    at Server.listen (node:net:2170:7)[39m
+    at startNodeServer [90m(C:\Users\caihe\Documents\develop\laser-scrapping\[39msrc\server.ts:655:10[90m)[39m
+    at <anonymous> [90m(C:\Users\caihe\Documents\develop\laser-scrapping\[39msrc\server.ts:679:3[90m)[39m
+[90m    at ModuleJob.run (node:internal/modules/esm/module_job:437:25)[39m
+    at async node:internal/modules/esm/loader:639:26
+[90m    at async asyncRunEntryPointWithESMLoader (node:internal/modules/run_main:101:5)[39m {
+  code: [32m'EADDRINUSE'[39m,
+  errno: [33m-4091[39m,
+  syscall: [32m'listen'[39m,
+  address: [32m'::'[39m,
+  port: [33m3001[39m
+}
+[main] Backend encerrado com código 0
+🚀 LaserWidget API Server starting on http://localhost:3001
+🗄️  SQLite: C:\Users\caihe\Documents\develop\laser-scrapping\output\ordens_servico.sqlite
+❌ Uncaught Exception protegida no backend: Error: listen EADDRINUSE: address already in use :::3001
+[90m    at Server.setupListenHandle [as _listen2] (node:net:2008:16)[39m
+[90m    at listenInCluster (node:net:2065:12)[39m
+[90m    at Server.listen (node:net:2170:7)[39m
+    at startNodeServer [90m(C:\Users\caihe\Documents\develop\laser-scrapping\[39msrc\server.ts:655:10[90m)[39m
+    at <anonymous> [90m(C:\Users\caihe\Documents\develop\laser-scrapping\[39msrc\server.ts:679:3[90m)[39m
+[90m    at ModuleJob.run (node:internal/modules/esm/module_job:437:25)[39m
+    at async node:internal/modules/esm/loader:639:26
+[90m    at async asyncRunEntryPointWithESMLoader (node:internal/modules/run_main:101:5)[39m {
+  code: [32m'EADDRINUSE'[39m,
+  errno: [33m-4091[39m,
+  syscall: [32m'listen'[39m,
+  address: [32m'::'[39m,
+  port: [33m3001[39m
+}
+[main] Backend encerrado com código 0

@@ -30,7 +30,7 @@ import {
   Columns
 } from 'lucide-react';
 
-import { parseXlsx, listXlsxFiles, randomizeXlsx } from '../api.js';
+import { parseXlsx, listXlsxFiles, randomizeXlsx, startScraper, getScraperStatus, subscribeScraperStream } from '../api.js';
 import { XlsxParsed, XlsxSheet, XlsxCellData } from '../types.js';
 import {
   applyFormulasToMatrix,
@@ -76,13 +76,24 @@ function cloneParsedData(data: XlsxParsed): XlsxParsed {
   };
 }
 
-export const OperationPanel: React.FC = () => {
+export interface OperationPanelProps {
+  selectedOsProp?: DbOrder | null;
+  onClearSelectedOsProp?: () => void;
+}
+
+export const OperationPanel: React.FC<OperationPanelProps> = ({ selectedOsProp, onClearSelectedOsProp }) => {
   // ── OS Database State ──
   const [osSearchQuery, setOsSearchQuery] = useState('');
   const [osList, setOsList] = useState<DbOrder[]>([]);
   const [selectedOs, setSelectedOs] = useState<DbOrder | null>(null);
   const [isSearchingOs, setIsSearchingOs] = useState(false);
   const [showOsDropdown, setShowOsDropdown] = useState(false);
+
+  // ── On-the-fly Mini Scraping State ──
+  const [isMiniScraping, setIsMiniScraping] = useState(false);
+  const [miniScrapeStatus, setMiniScrapeStatus] = useState('');
+  const [miniScrapeLog, setMiniScrapeLog] = useState('');
+  const miniScrapeCleanupRef = useRef<(() => void) | null>(null);
 
   // ── Spreadsheet State ──
   const [parsedData, setParsedData] = useState<XlsxParsed | null>(null);
@@ -167,7 +178,18 @@ export const OperationPanel: React.FC = () => {
     setRecents(getRecentFiles());
     setTemplates(getTemplates());
     loadServerFiles();
+
+    return () => {
+      miniScrapeCleanupRef.current?.();
+    };
   }, []);
+
+  // Sync incoming selectedOsProp from other tabs (Scraper / OS Table)
+  useEffect(() => {
+    if (selectedOsProp) {
+      handleSelectOs(selectedOsProp);
+    }
+  }, [selectedOsProp]);
 
   // Sync available sheet checkboxes & column checkboxes when spreadsheet loads
   useEffect(() => {
@@ -221,11 +243,12 @@ export const OperationPanel: React.FC = () => {
 
   const handleSelectOs = (os: DbOrder) => {
     setSelectedOs(os);
-    setOsSearchQuery(`OS #${os.id} - ${os.cliente_nome || ''}`);
+    const cleanClient = os.cliente_nome ? os.cliente_nome.split('\t')[0].split('\n')[0] : '';
+    setOsSearchQuery(`OS #${os.id}${cleanClient ? ' - ' + cleanClient : ''}`);
     setShowOsDropdown(false);
     setIsOsSubstituted(false);
     setSubstitutionDiffs([]);
-    setStatusMsg(`✅ Ordem de Serviço #${os.id} selecionada (${os.cliente_nome || 'Cliente'}).`);
+    setStatusMsg(`✅ Ordem de Serviço #${os.id} selecionada (${cleanClient || 'Cliente'}).`);
 
     // Auto-apply OS substitutions if spreadsheet is loaded
     if (parsedData) {
@@ -235,6 +258,135 @@ export const OperationPanel: React.FC = () => {
         setSubstitutionDiffs(res.diffs);
         setIsOsSubstituted(true);
       } catch {}
+    }
+  };
+
+  const runMiniScraperForOs = async (targetId: string) => {
+    if (isMiniScraping) return;
+    setIsMiniScraping(true);
+    setMiniScrapeStatus(`Extraindo OS #${targetId} do sistema MedLaser...`);
+    setMiniScrapeLog('Iniciando navegador em modo silencioso...');
+    setStatusMsg(`⏳ OS #${targetId} não encontrada no banco local. Realizando extração automática no MedLaser...`);
+
+    miniScrapeCleanupRef.current?.();
+    miniScrapeCleanupRef.current = subscribeScraperStream(
+      (msg) => {
+        if (msg.includes('Autenticando')) {
+          setMiniScrapeLog('Autenticando no MedLaser...');
+        } else if (msg.includes('Pesquisando OS')) {
+          setMiniScrapeLog(`Pesquisando OS #${targetId} no sistema...`);
+        } else if (msg.includes('Link de impressão') || msg.includes('folhas de impressão')) {
+          setMiniScrapeLog('Acessando folha de impressão da OS...');
+        } else if (msg.includes('extraída com SUCESSO')) {
+          setMiniScrapeLog('Dados minerados com sucesso! Salvando...');
+        } else if (msg.includes('Reconhecimento de Serviço')) {
+          setMiniScrapeLog('Classificando categoria de serviço...');
+        } else {
+          const clean = msg.replace(/^.*?\]\s*/, '').trim();
+          if (clean && clean.length < 65) {
+            setMiniScrapeLog(clean);
+          }
+        }
+      },
+      () => {}
+    );
+
+    try {
+      await startScraper({
+        headless: true,
+        osId: targetId
+      });
+
+      let attempts = 0;
+      const maxAttempts = 50; // até 50 segundos
+      let foundOrder: any = null;
+
+      while (attempts < maxAttempts) {
+        await new Promise(r => setTimeout(r, 1000));
+        attempts++;
+
+        try {
+          const status = await getScraperStatus();
+          if (!status.running) {
+            const orderRes = await fetch(`http://localhost:3001/api/orders/${encodeURIComponent(targetId)}`);
+            if (orderRes.ok) {
+              foundOrder = await orderRes.json();
+            }
+            break;
+          }
+        } catch {}
+      }
+
+      if (!foundOrder) {
+        try {
+          const orderRes = await fetch(`http://localhost:3001/api/orders/${encodeURIComponent(targetId)}`);
+          if (orderRes.ok) {
+            foundOrder = await orderRes.json();
+          }
+        } catch {}
+      }
+
+      if (foundOrder && foundOrder.id) {
+        setStatusMsg(`🎉 OS #${targetId} extraída com sucesso da MedLaser e vinculada à operação!`);
+        handleSelectOs(foundOrder);
+        await loadOrders('');
+      } else {
+        setStatusMsg(`⚠️ Raspagem concluída, mas a OS #${targetId} não foi retornada pelo sistema MedLaser.`);
+      }
+    } catch (err: any) {
+      console.error('Erro no mini-scraper:', err);
+      setStatusMsg(`❌ Falha na raspagem da OS #${targetId}: ${err?.message || String(err)}`);
+    } finally {
+      miniScrapeCleanupRef.current?.();
+      setIsMiniScraping(false);
+      setMiniScrapeStatus('');
+      setMiniScrapeLog('');
+    }
+  };
+
+  const handleDirectOsSubmit = async () => {
+    const raw = osSearchQuery.trim();
+    if (!raw) return;
+    const osIdMatch = raw.match(/\b\d+\b/);
+    const targetId = osIdMatch ? osIdMatch[0] : raw;
+
+    setIsSearchingOs(true);
+    setStatusMsg(`🔍 Consultando OS #${targetId} no banco de dados local...`);
+    try {
+      // 1. Tenta buscar direto por ID na API local
+      const singleRes = await fetch(`http://localhost:3001/api/orders/${encodeURIComponent(targetId)}`);
+      if (singleRes.ok) {
+        const order = await singleRes.json();
+        if (order && order.id) {
+          handleSelectOs(order);
+          setShowOsDropdown(false);
+          setIsSearchingOs(false);
+          return;
+        }
+      }
+
+      // 2. Tenta buscar na lista geral de OSs por ID exato
+      const searchRes = await fetch(`http://localhost:3001/api/orders?search=${encodeURIComponent(targetId)}&limit=10`);
+      if (searchRes.ok) {
+        const data = await searchRes.json();
+        if (data.items && data.items.length > 0) {
+          const exact = data.items.find((it: any) => String(it.id) === String(targetId));
+          if (exact) {
+            handleSelectOs(exact);
+            setShowOsDropdown(false);
+            setIsSearchingOs(false);
+            return;
+          }
+        }
+      }
+
+      // 3. Se NÃO existe no DB interno: dispara o scraping com mini loadingzinho!
+      setIsSearchingOs(false);
+      setShowOsDropdown(false);
+      await runMiniScraperForOs(targetId);
+    } catch (err: any) {
+      setIsSearchingOs(false);
+      setStatusMsg(`❌ Erro ao buscar OS #${targetId}: ${err?.message || String(err)}`);
     }
   };
 
@@ -812,22 +964,213 @@ export const OperationPanel: React.FC = () => {
           )}
         </div>
 
-        {/* Search Bar */}
+        {/* Search Bar & Direct Action */}
         <div style={{ position: 'relative' }}>
-          <div style={{ display: 'flex', alignItems: 'center', backgroundColor: '#09090b', border: '1px solid #27272a', borderRadius: '8px', padding: '0 12px' }}>
-            <Search size={18} color="#71717a" />
-            <input
-              type="text"
-              placeholder="Digite o número da OS, nome do cliente, modelo ou técnico..."
-              value={osSearchQuery}
-              onChange={handleOsSearchChange}
-              onFocus={() => setShowOsDropdown(true)}
-              style={{ flex: 1, backgroundColor: 'transparent', border: 'none', color: '#ffffff', padding: '10px 12px', fontSize: '0.88rem', outline: 'none' }}
-            />
-            {isSearchingOs && <RefreshCw size={16} className="animate-spin" color="#fbbf24" />}
+          <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+            <div style={{ flex: 1, display: 'flex', alignItems: 'center', backgroundColor: '#09090b', border: '1px solid #27272a', borderRadius: '8px', padding: '0 12px' }}>
+              <Search size={18} color="#71717a" />
+              <input
+                type="text"
+                placeholder="Digite o número da OS (ex: 6197, 7588, 3705)..."
+                value={osSearchQuery}
+                onChange={handleOsSearchChange}
+                onFocus={() => setShowOsDropdown(true)}
+                disabled={isMiniScraping}
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter') {
+                    e.preventDefault();
+                    handleDirectOsSubmit();
+                  }
+                }}
+                style={{ flex: 1, backgroundColor: 'transparent', border: 'none', color: '#ffffff', padding: '10px 12px', fontSize: '0.88rem', outline: 'none' }}
+              />
+              {osSearchQuery && !isMiniScraping && (
+                <button
+                  onClick={() => {
+                    setOsSearchQuery('');
+                    setSelectedOs(null);
+                    if (onClearSelectedOsProp) onClearSelectedOsProp();
+                  }}
+                  style={{ background: 'none', border: 'none', color: '#71717a', cursor: 'pointer', fontSize: '13px', padding: '0 4px' }}
+                  title="Limpar campo"
+                >
+                  ✕
+                </button>
+              )}
+              {isSearchingOs && <RefreshCw size={16} className="animate-spin" color="#fbbf24" />}
+            </div>
+
+            <button
+              className="btn btn-primary"
+              style={{
+                padding: '10px 16px',
+                fontSize: '0.84rem',
+                display: 'flex',
+                alignItems: 'center',
+                gap: '6px',
+                backgroundColor: isMiniScraping ? '#3f3f46' : '#f59e0b',
+                color: isMiniScraping ? '#a1a1aa' : '#000',
+                fontWeight: '700',
+                whiteSpace: 'nowrap',
+                cursor: isMiniScraping ? 'not-allowed' : 'pointer'
+              }}
+              onClick={handleDirectOsSubmit}
+              disabled={isMiniScraping}
+              title="Buscar no banco ou extrair automaticamente do MedLaser"
+            >
+              {isMiniScraping ? (
+                <>
+                  <RefreshCw size={15} className="animate-spin" /> Extraindo...
+                </>
+              ) : (
+                <>
+                  <CheckCircle2 size={16} /> Vincular OS
+                </>
+              )}
+            </button>
           </div>
 
-          {showOsDropdown && osList.length > 0 && (
+          {/* Mini Loadingzinho quando a OS está sendo raspada do sistema MedLaser */}
+          {isMiniScraping && (
+            <div style={{
+              marginTop: '10px',
+              backgroundColor: '#18181b',
+              border: '1px solid rgba(245, 158, 11, 0.45)',
+              borderRadius: '8px',
+              padding: '14px 16px',
+              display: 'flex',
+              flexDirection: 'column',
+              gap: '10px',
+              boxShadow: '0 6px 24px rgba(245, 158, 11, 0.15)'
+            }}>
+              <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+                <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
+                  <RefreshCw size={18} className="animate-spin" color="#f59e0b" />
+                  <span style={{ color: '#fbbf24', fontWeight: '700', fontSize: '0.88rem' }}>
+                    {miniScrapeStatus}
+                  </span>
+                </div>
+                <span style={{
+                  fontSize: '0.72rem',
+                  color: '#fbbf24',
+                  backgroundColor: 'rgba(245, 158, 11, 0.15)',
+                  border: '1px solid rgba(245, 158, 11, 0.3)',
+                  padding: '2px 8px',
+                  borderRadius: '4px',
+                  fontWeight: '600'
+                }}>
+                  Scraping Automático
+                </span>
+              </div>
+
+              {/* Status do log ao vivo */}
+              <div style={{ display: 'flex', alignItems: 'center', gap: '8px', fontSize: '0.8rem', color: '#e4e4e7' }}>
+                <span style={{ width: '7px', height: '7px', borderRadius: '50%', backgroundColor: '#f59e0b', display: 'inline-block' }}></span>
+                <span>{miniScrapeLog || 'Conectando ao sistema...'}</span>
+              </div>
+
+              {/* Barra de progresso animada */}
+              <div style={{ width: '100%', height: '4px', backgroundColor: '#27272a', borderRadius: '2px', overflow: 'hidden' }}>
+                <div style={{
+                  height: '100%',
+                  width: '100%',
+                  background: 'linear-gradient(90deg, #f59e0b, #fbbf24, #f59e0b)',
+                  backgroundSize: '200% 100%',
+                  animation: 'miniShimmer 1.5s infinite linear'
+                }}></div>
+              </div>
+            </div>
+          )}
+
+          {/* Quick Selection Chips for Recent OSs */}
+          {osList.length > 0 && !selectedOs && !isMiniScraping && (
+            <div style={{ display: 'flex', alignItems: 'center', gap: '8px', flexWrap: 'wrap', marginTop: '8px' }}>
+              <span style={{ fontSize: '0.74rem', color: '#71717a' }}>OSs recentes no banco:</span>
+              {osList.slice(0, 6).map((os) => {
+                const cleanName = os.cliente_nome ? os.cliente_nome.split('\t')[0].split('\n')[0] : 'Cliente';
+                return (
+                  <button
+                    key={os.id}
+                    onClick={() => handleSelectOs(os)}
+                    style={{
+                      backgroundColor: '#27272a',
+                      color: '#e4e4e7',
+                      border: '1px solid #3f3f46',
+                      borderRadius: '4px',
+                      padding: '3px 8px',
+                      fontSize: '0.76rem',
+                      cursor: 'pointer',
+                      display: 'flex',
+                      alignItems: 'center',
+                      gap: '5px'
+                    }}
+                    title={`Vincular OS #${os.id} (${cleanName})`}
+                  >
+                    <span style={{ color: '#fbbf24', fontWeight: '700' }}>#{os.id}</span>
+                    <span style={{ maxWidth: '130px', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                      {cleanName}
+                    </span>
+                  </button>
+                );
+              })}
+            </div>
+          )}
+
+          {/* Selected OS Detail Badge */}
+          {selectedOs && !isMiniScraping && (
+            <div style={{
+              marginTop: '10px',
+              backgroundColor: '#09090b',
+              border: '1px solid rgba(16, 185, 129, 0.4)',
+              borderRadius: '8px',
+              padding: '10px 14px',
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'space-between',
+              flexWrap: 'wrap',
+              gap: '10px'
+            }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
+                <span style={{ backgroundColor: 'rgba(16, 185, 129, 0.2)', color: '#10b981', padding: '4px 10px', borderRadius: '6px', fontWeight: '800', fontSize: '0.9rem' }}>
+                  OS #{selectedOs.id}
+                </span>
+                <div>
+                  <div style={{ color: '#ffffff', fontWeight: '600', fontSize: '0.88rem' }}>
+                    {selectedOs.cliente_nome?.split('\t')[0] || 'Cliente'}
+                  </div>
+                  <div style={{ color: '#a1a1aa', fontSize: '0.76rem' }}>
+                    Modelo: <strong style={{ color: '#e4e4e7' }}>{selectedOs.equipamento_modelo || 'N/I'}</strong> • Série: <strong style={{ color: '#e4e4e7' }}>{selectedOs.equipamento_codigo || 'N/I'}</strong> • Categoria: <strong style={{ color: '#38bdf8' }}>{selectedOs.categoria_servico || 'Geral'}</strong>
+                  </div>
+                </div>
+              </div>
+
+              <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
+                <button
+                  className="btn btn-secondary"
+                  style={{ padding: '4px 8px', fontSize: '0.74rem', display: 'flex', alignItems: 'center', gap: '4px' }}
+                  onClick={() => runMiniScraperForOs(selectedOs.id)}
+                  title="Re-extrair dados mais recentes do sistema MedLaser"
+                >
+                  <RefreshCw size={12} /> Atualizar da Web
+                </button>
+                <button
+                  className="btn btn-secondary"
+                  style={{ padding: '4px 8px', fontSize: '0.74rem', display: 'flex', alignItems: 'center', gap: '4px' }}
+                  onClick={() => {
+                    setSelectedOs(null);
+                    setOsSearchQuery('');
+                    setIsOsSubstituted(false);
+                    setSubstitutionDiffs([]);
+                    if (onClearSelectedOsProp) onClearSelectedOsProp();
+                  }}
+                >
+                  <X size={12} /> Desvincular
+                </button>
+              </div>
+            </div>
+          )}
+
+          {showOsDropdown && osList.length > 0 && !selectedOs && !isMiniScraping && (
             <div style={{ position: 'absolute', top: '100%', left: 0, right: 0, marginTop: '6px', backgroundColor: '#18181b', border: '1px solid #27272a', borderRadius: '8px', zIndex: 100, maxHeight: '240px', overflowY: 'auto', boxShadow: '0 16px 32px rgba(0,0,0,0.8)' }}>
               {osList.map((os) => (
                 <div
@@ -842,7 +1185,7 @@ export const OperationPanel: React.FC = () => {
                       OS #{os.id}
                     </span>
                     <span style={{ color: '#f4f4f5', fontSize: '0.86rem' }}>
-                      {os.cliente_nome || 'Cliente Não Informado'}
+                      {os.cliente_nome ? os.cliente_nome.split('\t')[0] : 'Cliente Não Informado'}
                     </span>
                     <div style={{ fontSize: '0.75rem', color: '#a1a1aa', marginTop: '2px' }}>
                       Modelo: {os.equipamento_modelo || 'N/I'} • Série: {os.equipamento_codigo || 'N/I'} • Técnico: {os.tecnico_responsavel || 'Em aberto'}

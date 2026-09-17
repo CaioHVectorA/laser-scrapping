@@ -19,17 +19,27 @@ import dotenv from 'dotenv';
 
 // ─── Start Bun/Node API Server as child process ─────────────────────────
 async function startBackend() {
-  try {
-    const check = await fetch(`${BACKEND_URL}/api/scraper/status`);
-    if (check.ok) {
-      console.log(`✅ Backend já está em execução na porta ${BACKEND_PORT}`);
-      return;
-    }
-  } catch {}
-
   const isPackaged = app.isPackaged;
   const isWin = process.platform === 'win32';
   const userDataDir = app.getPath('userData');
+
+  // Em modo de desenvolvimento, dá tempo para o backend iniciado externamente (ex: concurrently com tsx) subir
+  if (!isPackaged) {
+    console.log('⏳ Verificando se backend já está em execução...');
+    const isRunning = await waitForBackend(3500);
+    if (isRunning) {
+      console.log(`✅ Backend já está em execução na porta ${BACKEND_PORT}`);
+      return;
+    }
+  } else {
+    try {
+      const check = await fetch(`${BACKEND_URL}/api/scraper/status`);
+      if (check.ok) {
+        console.log(`✅ Backend já está em execução na porta ${BACKEND_PORT}`);
+        return;
+      }
+    } catch {}
+  }
 
   // Carrega configurações do .env a partir de resources, userData ou projectRoot
   const envCandidates = [
@@ -55,11 +65,7 @@ async function startBackend() {
     }
   }
 
-  const userDir = process.env.USERPROFILE || process.env.HOME || '';
-  const winBun = path.join(userDir, '.bun', 'bin', 'bun.exe');
-  const unixBun = path.join(userDir, '.bun', 'bin', 'bun');
-
-  let serverCmd = 'bun';
+  let serverCmd = 'node';
   let serverArgs: string[] = [];
   const serverEnv: Record<string, string> = {
     ...process.env,
@@ -92,16 +98,10 @@ async function startBackend() {
     }
   } else {
     const serverPath = path.join(projectRoot, 'src', 'server.ts');
-    console.log(`🚀 Starting development backend: ${serverPath}`);
-    serverArgs = [serverPath];
-
-    if (process.env.BUN_PATH) {
-      serverCmd = process.env.BUN_PATH;
-    } else if (isWin && fs.existsSync(winBun)) {
-      serverCmd = winBun;
-    } else if (!isWin && fs.existsSync(unixBun)) {
-      serverCmd = unixBun;
-    }
+    console.log(`🚀 Starting development backend via TSX (Node): ${serverPath}`);
+    // No Windows, o Playwright requer Node.js/TSX pois o Bun possui incompatibilidade com stdio debug pipes
+    serverCmd = isWin ? 'npx.cmd' : 'npx';
+    serverArgs = ['tsx', serverPath];
   }
 
   try {
