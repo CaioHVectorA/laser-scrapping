@@ -94,6 +94,44 @@ describe('Detecção de Colunas da Planilha (detectRowColumnMap)', () => {
     expect(map?.colMedia).toBe(5);
     expect(map?.colMeds).toEqual([6, 7, 8, 9, 10]);
   });
+
+  it('detecta colunas com unidades e variações de cabeçalho (ex: Base (W), Tol. Máx, Medição 1)', () => {
+    const matrix = [
+      [
+        { value: 'Base (W)', displayValue: 'Base (W)' },
+        { value: 'Tol. Máxima (W)', displayValue: 'Tol. Máxima (W)' },
+        { value: 'Tol. Mínima (W)', displayValue: 'Tol. Mínima (W)' },
+        { value: 'Erro Total (W)', displayValue: 'Erro Total (W)' },
+        { value: 'Média', displayValue: 'Média' },
+        { value: 'Medição 1', displayValue: 'Medição 1' },
+        { value: 'Medição 2', displayValue: 'Medição 2' },
+        { value: 'Medição 3', displayValue: 'Medição 3' },
+        { value: 'Medição 4', displayValue: 'Medição 4' },
+        { value: 'Medição 5', displayValue: 'Medição 5' }
+      ]
+    ];
+
+    const map = detectRowColumnMap(matrix);
+    expect(map).not.toBeNull();
+    expect(map?.colBase).toBe(1);
+    expect(map?.colTolMax).toBe(2);
+    expect(map?.colTolMin).toBe(3);
+    expect(map?.colErroTotal1).toBe(4);
+    expect(map?.colMedia).toBe(5);
+    expect(map?.colMeds).toEqual([6, 7, 8, 9, 10]);
+  });
+
+  it('respeita tolerâncias com Tol Min positivo (ex: tolMax=4, tolMin=4 significando -4)', () => {
+    const base = 20;
+    const meds = [20, 20, 20, 20, 20];
+    // Tol Min passado positivo como no cabeçalho de algumas planilhas
+    for (let i = 0; i < 50; i++) {
+      const varied = generateValidRowMeasurements(base, meds, 10, undefined, undefined, 50, i, 4, 4);
+      const calc = calculateRowFormulas(base, varied);
+      expect(calc.erroTotal).toBeLessThanOrEqual(4.0);
+      expect(calc.erroTotal).toBeGreaterThanOrEqual(-4.0);
+    }
+  });
 });
 
 describe('Garantia Estrita de Limites de Erro (Strict Boundary Clamping)', () => {

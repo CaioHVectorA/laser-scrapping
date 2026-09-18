@@ -9,7 +9,7 @@ import {
 import { MeasurementChart } from './MeasurementChart.js';
 import { ReportDocumentView } from './ReportDocumentView.js';
 import { applyFormulasToMatrix, generateValidRowMeasurements, detectRowColumnMap } from '../formulas.js';
-import { applyOsSubstitutions, DbOrder } from '../osSubstitution.js';
+import { applyOsSubstitutions, DbOrder, updateAllDateFields } from '../osSubstitution.js';
 
 interface XlsxCellData {
   address: string;
@@ -104,7 +104,6 @@ export const XlsxEditor: React.FC = () => {
   const [parsedData, setParsedData] = useState<XlsxParsed | null>(null);
   const [activeSheetIndex, setActiveSheetIndex] = useState(0);
   const [maxPercent, setMaxPercent] = useState(10);
-  const [randomness, setRandomness] = useState(50);
   const [statusMsg, setStatusMsg] = useState('');
   const [isDragging, setIsDragging] = useState(false);
 
@@ -471,22 +470,13 @@ export const XlsxEditor: React.FC = () => {
                 }
               });
 
-              let sheetMedia: number | undefined = undefined;
-              if (colMap.colMedia > 0 && row[colMap.colMedia - 1]) {
-                const mCell = row[colMap.colMedia - 1];
-                const v = typeof mCell?.value === 'number'
-                  ? mCell.value
-                  : parseFloat(String(mCell?.displayValue || '').replace(',', '.'));
-                if (!isNaN(v) && v > 0) sheetMedia = v;
-              }
-
               let rowTolMax: number | undefined = undefined;
               if (colMap.colTolMax > 0 && row[colMap.colTolMax - 1]) {
                 const tCell = row[colMap.colTolMax - 1];
                 const v = typeof tCell?.value === 'number'
                   ? tCell.value
                   : parseFloat(String(tCell?.displayValue || '').replace(',', '.'));
-                if (!isNaN(v) && v > 0) rowTolMax = v;
+                if (!isNaN(v) && v !== 0) rowTolMax = Math.abs(v);
               }
 
               let rowTolMin: number | undefined = undefined;
@@ -495,7 +485,7 @@ export const XlsxEditor: React.FC = () => {
                 const v = typeof tCell?.value === 'number'
                   ? tCell.value
                   : parseFloat(String(tCell?.displayValue || '').replace(',', '.'));
-                if (!isNaN(v) && v < 0) rowTolMin = v;
+                if (!isNaN(v) && v !== 0) rowTolMin = -Math.abs(v);
               }
 
               // Gera medições garantindo que o ERRO TOTAL nunca ultrapasse a tolerância
@@ -504,8 +494,8 @@ export const XlsxEditor: React.FC = () => {
                 currentMeds,
                 maxPercent,
                 selectedIndicesSet,
-                sheetMedia,
-                randomness,
+                undefined,
+                50,
                 r,
                 rowTolMax,
                 rowTolMin
@@ -559,10 +549,13 @@ export const XlsxEditor: React.FC = () => {
 
           // Recalcula todas as fórmulas dependentes (media, ERRO TOTAL, desvPadrao, incerteza, k, confianca, tendencia)
           applyFormulasToMatrix(activeSheet.matrix, worksheet);
+
+          // Atualiza qualquer data na planilha para o dia de agora
+          updateAllDateFields(nextParsed, workbookRef.current);
         }
 
         pushHistoryState(nextParsed, `Variação ±${maxPercent}% (${alteredCount} células)`);
-        setStatusMsg(`✨ ${alteredCount} medições variadas (±${maxPercent}%). Erro Total garantido dentro dos limites de tolerância.`);
+        setStatusMsg(`✨ ${alteredCount} medições variadas (±${maxPercent}%). Erro Total garantido dentro dos limites de tolerância e datas atualizadas para hoje.`);
       } else {
         // Fallback para arquivo do servidor
         const tempOutput = parsedData.filePath.replace(/\.xlsx$/i, '_temp_variado.xlsx');
@@ -988,22 +981,6 @@ export const XlsxEditor: React.FC = () => {
                     onChange={(e) => setMaxPercent(parseInt(e.target.value, 10))}
                     style={{ width: '70px', accentColor: '#3b82f6' }}
                     title="Porcentagem máxima de variação em torno da base"
-                  />
-                </div>
-
-                {/* Slider 2: Randomização / Dispersão */}
-                <div style={{ display: 'flex', alignItems: 'center', gap: '8px', backgroundColor: '#09090b', padding: '4px 10px', borderRadius: '6px', border: '1px solid #27272a' }}>
-                  <span style={{ fontSize: '0.78rem', color: '#a1a1aa', fontWeight: '500' }}>
-                    Dispersão: <strong style={{ color: '#ffffff' }}>{randomness}%</strong>
-                  </span>
-                  <input
-                    type="range"
-                    min="0"
-                    max="100"
-                    value={randomness}
-                    onChange={(e) => setRandomness(parseInt(e.target.value, 10))}
-                    style={{ width: '70px', accentColor: '#10b981' }}
-                    title="0% = onda suave / harmônica, 100% = dispersão aleatória / ruído"
                   />
                 </div>
 

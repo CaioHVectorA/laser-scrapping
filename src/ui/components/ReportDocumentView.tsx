@@ -66,7 +66,7 @@ export function extractDocData(sheet?: XlsxSheet | null, order?: DbOrder | null)
     equipamentoModelo: order?.equipamento_modelo || 'UroPulse',
     equipamentoFabricante: 'Dornier',
     equipamentoSerie: order?.equipamento_codigo || '',
-    dataExtenso: formatDateExtenso(order?.data_entrada || order?.scraped_at),
+    dataExtenso: formatDateExtenso(),
     tempAmbiente: '+25°C',
     umidade: '80%',
     pressao: '900hPA',

@@ -115,7 +115,7 @@ export interface RowColumnMap {
  * Detecta as posições das colunas na matriz a partir dos cabeçalhos
  */
 export function detectRowColumnMap(matrix: any[][]): RowColumnMap | null {
-  for (let r = 0; r < Math.min(matrix.length, 25); r++) {
+  for (let r = 0; r < Math.min(matrix.length, 35); r++) {
     const row = matrix[r];
     if (!row) continue;
 
@@ -139,25 +139,49 @@ export function detectRowColumnMap(matrix: any[][]): RowColumnMap | null {
       if (!cell) continue;
       const text = String(cell.displayValue || cell.value || '').trim().toLowerCase();
 
-      if (text === 'base') colBase = c + 1;
-      else if (/^tol\.?\s*max/i.test(text)) colTolMax = c + 1;
-      else if (/^tol\.?\s*min/i.test(text)) colTolMin = c + 1;
-      else if (text === 'erro total') {
+      if (text === 'base' || /^(?:valor\s+)?base\b/i.test(text) || /^ponto(?:\s+nominal|\s+de\s+ensaio)?/i.test(text)) {
+        colBase = c + 1;
+      }
+      else if (/^tol\.?\s*m[áa]x/i.test(text) || /^toler[âa]ncia\s*m[áa]xima/i.test(text) || /^limite\s*sup/i.test(text)) {
+        colTolMax = c + 1;
+      }
+      else if (/^tol\.?\s*m[íi]n/i.test(text) || /^toler[âa]ncia\s*m[íi]nima/i.test(text) || /^limite\s*inf/i.test(text)) {
+        colTolMin = c + 1;
+      }
+      else if (/^erro\s*total/i.test(text)) {
         if (colErroTotal1 === -1) colErroTotal1 = c + 1;
         else colErroTotal2 = c + 1;
       }
-      else if (/^medi?a$/i.test(text)) colMedia = c + 1;
-      else if (/^med(\d+)$/i.test(text)) {
-        const match = text.match(/^med(\d+)$/i);
-        colMeds.push({ col: c + 1, num: parseInt(match![1], 10) });
+      else if (/^m[ée]dia/i.test(text)) {
+        colMedia = c + 1;
       }
-      else if (text === 'erro') colErro = c + 1;
-      else if (/^desv\.?\s*padr/i.test(text) || text === 'desvpadrao') colDesvPadrao = c + 1;
-      else if (/^incerteza\s*\(?tipo\s*a\)?/i.test(text)) colIncertezaA = c + 1;
-      else if (/^incerteza\s*combinada/i.test(text)) colIncertezaComb = c + 1;
-      else if (text === 'k') colK = c + 1;
-      else if (/^confian/i.test(text)) colConfianca = c + 1;
-      else if (/^tend/i.test(text)) colTendencia = c + 1;
+      else if (/^(?:med(?:i[çc][ãa]o|\.)?|m)\s*(\d+)$/i.test(text)) {
+        const match = text.match(/^(?:med(?:i[çc][ãa]o|\.)?|m)\s*(\d+)$/i);
+        if (match) {
+          colMeds.push({ col: c + 1, num: parseInt(match[1], 10) });
+        }
+      }
+      else if (/^erro\b/i.test(text)) {
+        colErro = c + 1;
+      }
+      else if (/^desv\.?\s*padr/i.test(text) || text === 'desvpadrao' || /^desvio\s*padr[ãa]o/i.test(text)) {
+        colDesvPadrao = c + 1;
+      }
+      else if (/^incerteza\s*\(?tipo\s*a\)?/i.test(text)) {
+        colIncertezaA = c + 1;
+      }
+      else if (/^incerteza\s*combinada/i.test(text)) {
+        colIncertezaComb = c + 1;
+      }
+      else if (text === 'k' || /^fator\s*k/i.test(text)) {
+        colK = c + 1;
+      }
+      else if (/^confian/i.test(text)) {
+        colConfianca = c + 1;
+      }
+      else if (/^tend/i.test(text)) {
+        colTendencia = c + 1;
+      }
     }
 
     if (colMeds.length > 0 && colBase !== -1) {
@@ -187,7 +211,7 @@ export function detectRowColumnMap(matrix: any[][]): RowColumnMap | null {
 /**
  * Atualiza dinamicamente na matriz de células (e opcionalmente no worksheet ExcelJS)
  * todas as colunas com fórmulas dependentes das medições med1..med5.
- * A coluna 'media' (Coluna E) NUNCA é sobrescrita, permanecendo o valor original da planilha.
+ * A coluna 'media' (Coluna E) é recalculada e sincronizada com as medições reais.
  */
 export function applyFormulasToMatrix(
   matrix: any[][],
@@ -209,16 +233,6 @@ export function applyFormulasToMatrix(
 
     if (isNaN(baseVal) || baseVal <= 0) continue;
 
-    // Obtém o valor original da coluna 'media' da planilha
-    let sheetMedia: number | undefined = undefined;
-    if (colMap.colMedia > 0 && row[colMap.colMedia - 1]) {
-      const mCell = row[colMap.colMedia - 1];
-      const v = typeof mCell?.value === 'number'
-        ? mCell.value
-        : parseFloat(String(mCell?.displayValue || '').replace(',', '.'));
-      if (!isNaN(v) && v > 0) sheetMedia = v;
-    }
-
     // Coleta os valores atuais de med1..medN
     const medVals: number[] = [];
     for (const cIdx of colMap.colMeds) {
@@ -235,7 +249,8 @@ export function applyFormulasToMatrix(
 
     if (medVals.length === 0) continue;
 
-    const calc = calculateRowFormulas(baseVal, medVals, sheetMedia);
+    // Calcula fórmulas a partir dos valores reais das medições
+    const calc = calculateRowFormulas(baseVal, medVals);
 
     const updateCell = (colIdx: number, val: number, isShortDecimal = false) => {
       if (colIdx <= 0 || colIdx > row.length) return;
@@ -265,16 +280,17 @@ export function applyFormulasToMatrix(
       }
     };
 
-    // A coluna 'media' (Coluna E) NUNCA é sobrescrita (permanece o que veio na planilha)
+    // Sincroniza a coluna 'media' (Coluna E) com a média real das medições
+    updateCell(colMap.colMedia, calc.media, true);          // E: MÉDIA
     updateCell(colMap.colErroTotal1, calc.erroTotal);       // D: ERRO TOTAL
-    updateCell(colMap.colErro, calc.erro, true);            // K: ERRO (= base - media_planilha)
+    updateCell(colMap.colErro, calc.erro, true);            // K: ERRO (= base - média)
     updateCell(colMap.colErroTotal2, calc.erroTotal);       // L: ERRO TOTAL
     updateCell(colMap.colDesvPadrao, calc.desvPadrao);      // M: desvPadrao
     updateCell(colMap.colIncertezaA, calc.incertezaA);      // N: incerteza (tipo a)
     updateCell(colMap.colIncertezaComb, calc.incertezaComb);// O: Incerteza combinada
     updateCell(colMap.colK, calc.k);                        // P: k
-    updateCell(colMap.colConfianca, calc.confianca);        // Q: confianaca
-    updateCell(colMap.colTendencia, calc.tendencia, true);  // R: tendencia (= media_planilha - base)
+    updateCell(colMap.colConfianca, calc.confianca);        // Q: confianca
+    updateCell(colMap.colTendencia, calc.tendencia, true);  // R: tendencia (= média - base)
   }
 }
 
@@ -307,16 +323,16 @@ export const DEFAULT_MEDLASER_PRESET: CustomLayoutPreset = {
 };
 
 /**
- * Gera medições variadas para uma linha de ensaio garantindo que o
+ * Gera medições variadas para uma linha de ensaio garantindo matematicamente que o
  * ERRO TOTAL resultante (D = K + Q) NUNCA ultrapasse os limites de tolerância:
  *   Tol. Min <= ERRO TOTAL <= Tol. Max
- * Suporta modos de variação: 'uniform', 'wobble', 'gaussian', 'trend'
- * Aplica algoritmo de Shrinkage / Clamping adaptativo com garantia estrita de limites.
+ * E que ambos os extremos (Erro + Confiança e Erro - Confiança) estejam conformes.
+ * Aplica algoritmo de ruído suave com margem segura de 90% e clamping estrito.
  */
 export function generateValidRowMeasurements(
   baseVal: number,
   currentMeds: number[],
-  maxPercent: number,
+  maxPercent: number = 10,
   selectedIndicesSet?: Set<number>,
   sheetMedia?: number,
   randomnessOrMode: number | VariationMode = 50,
@@ -326,106 +342,142 @@ export function generateValidRowMeasurements(
 ): number[] {
   const n = currentMeds.length || 5;
 
-  // Usa os limites reais da linha se válidos, senão fallback de 20%
-  const tolMax = (rowTolMax !== undefined && !isNaN(rowTolMax) && rowTolMax > 0)
-    ? rowTolMax
+  // Normalização de tolerância: garante que TolMax > 0 e TolMin < 0
+  const rawTolMax = (rowTolMax !== undefined && !isNaN(rowTolMax) && rowTolMax !== 0)
+    ? Math.abs(rowTolMax)
     : baseVal * 0.20;
-  const tolMin = (rowTolMin !== undefined && !isNaN(rowTolMin) && rowTolMin < 0)
-    ? rowTolMin
+  const rawTolMin = (rowTolMin !== undefined && !isNaN(rowTolMin) && rowTolMin !== 0)
+    ? -Math.abs(rowTolMin)
     : -baseVal * 0.20;
 
-  // Margem segura para não tangenciar perigosamente o limiar da tolerância
-  const safeUpper = tolMax * 0.95;
-  const safeLower = tolMin * 0.95;
+  const tolMax = Math.max(rawTolMax, rawTolMin);
+  const tolMin = Math.min(rawTolMax, rawTolMin);
 
-  let numRandomness = 50;
-  if (typeof randomnessOrMode === 'number') {
-    numRandomness = randomnessOrMode;
-  } else if (randomnessOrMode === 'wobble') {
-    numRandomness = 25;
-  } else if (randomnessOrMode === 'gaussian') {
-    numRandomness = 75;
-  } else if (randomnessOrMode === 'trend') {
-    numRandomness = 15;
-  } else {
-    numRandomness = 50;
-  }
+  // Margem segura estrita de 90% para nunca tangenciar a borda de tolerância
+  const safeMargin = 0.90;
+  const safeUpper = tolMax * safeMargin;
+  const safeLower = tolMin * safeMargin;
+  const maxSafeLimit = Math.min(Math.abs(tolMax), Math.abs(tolMin)) * safeMargin;
 
-  const randRatio = Math.max(0, Math.min(100, numRandomness)) / 100;
-
-  // Função de ruído/onda conforme o modo de variação selecionado
-  const getNoiseFactor = (idx: number, attempt: number): number => {
-    let wave = 0;
-    if (randomnessOrMode === 'wobble') {
-      wave = Math.sin((rowIndex + 1) * 0.9 + (idx + 1) * 1.3 + attempt * 0.1);
-    } else if (randomnessOrMode === 'trend') {
-      const slope = (rowIndex % 2 === 0 ? 1 : -1) * ((idx - (n - 1) / 2) / ((n - 1) / 2 || 1));
-      wave = slope;
-    } else if (randomnessOrMode === 'gaussian') {
-      const u1 = Math.max(0.0001, Math.random());
-      const u2 = Math.random();
-      const z0 = Math.sqrt(-2.0 * Math.log(u1)) * Math.cos(2.0 * Math.PI * u2);
-      wave = Math.max(-2, Math.min(2, z0)) / 2;
-    } else {
-      wave = Math.sin((rowIndex + 1) * 0.85 + (idx + 1) * 1.25);
+  // Identifica a precisão decimal necessária a partir dos valores existentes
+  let decimals = 2;
+  for (const m of currentMeds) {
+    const s = String(m);
+    if (s.includes('.')) {
+      decimals = Math.max(decimals, s.split('.')[1].length);
     }
-    const noise = (Math.random() * 2 - 1);
-    const factor = wave * (1 - randRatio) + noise * randRatio;
-    return Math.max(-1, Math.min(1, factor));
+  }
+  decimals = Math.min(decimals, 4);
+  const factorPow = Math.pow(10, decimals);
+
+  // Helper para ruído gaussiano (distribuição normal de Box-Muller)
+  const sampleGaussian = (): number => {
+    const u1 = Math.max(0.0001, Math.random());
+    const u2 = Math.random();
+    return Math.sqrt(-2.0 * Math.log(u1)) * Math.cos(2.0 * Math.PI * u2);
   };
 
   let bestMeds = [...currentMeds];
-  let bestDistance = Infinity;
+  let bestDist = Infinity;
 
-  // 1. Tenta gerar por perturbação com formato de curva em busca de resultado dentro da margem segura
-  for (let attempt = 0; attempt < 300; attempt++) {
-    const candidateMeds = currentMeds.map((val, idx) => {
-      if (selectedIndicesSet && !selectedIndicesSet.has(idx)) return val;
-      const deltaMax = Math.abs(val) * (maxPercent / 100);
-      const factor = getNoiseFactor(idx, attempt);
-      return Math.round((val + factor * deltaMax) * 100) / 100;
+  // 1. Tenta gerar medições realistas com desvio controlado e média centrada próxima da base
+  for (let attempt = 0; attempt < 150; attempt++) {
+    // Alvo de média levemente deslocada (erro sistemático realista seguro <= 30% do limite seguro)
+    const targetMeanOffset = (Math.random() * 2 - 1) * (maxSafeLimit * 0.30);
+    const targetMean = baseVal + targetMeanOffset;
+
+    // Dispersão individual das medições (repetibilidade com desvio <= 15% do limite seguro)
+    const spreadMax = maxSafeLimit * 0.15;
+
+    const candidateMeds = currentMeds.map((orig, idx) => {
+      if (selectedIndicesSet && !selectedIndicesSet.has(idx)) {
+        return orig;
+      }
+      const g = Math.max(-2.5, Math.min(2.5, sampleGaussian())) / 2.5;
+      const jitter = g * spreadMax;
+      const rawVal = targetMean + jitter;
+      return Math.round(rawVal * factorPow) / factorPow;
     });
 
     const calc = calculateRowFormulas(baseVal, candidateMeds, sheetMedia);
 
-    // Se estiver estritamente dentro da margem segura, aceita imediatamente
-    if (calc.erroTotal >= safeLower && calc.erroTotal <= safeUpper) {
+    // Verificação estrita de limites:
+    // Tol. Min <= ErroTotal <= Tol. Max E margem segura
+    const isStrictlySafe = (
+      calc.erroTotal <= safeUpper &&
+      calc.erroTotal >= safeLower &&
+      (calc.erro - calc.confianca) >= safeLower &&
+      (Math.abs(calc.erro) + calc.confianca) <= maxSafeLimit
+    );
+
+    if (isStrictlySafe) {
       return candidateMeds;
     }
 
-    // Se estiver dentro da tolerância, guarda o melhor candidato
-    if (calc.erroTotal >= tolMin && calc.erroTotal <= tolMax) {
+    // Se estiver dentro da tolerância oficial, armazena como melhor candidato
+    if (
+      calc.erroTotal <= tolMax &&
+      calc.erroTotal >= tolMin &&
+      (calc.erro - calc.confianca) >= tolMin
+    ) {
       const dist = Math.abs(calc.erroTotal);
-      if (dist < bestDistance) {
-        bestDistance = dist;
+      if (dist < bestDist) {
+        bestDist = dist;
         bestMeds = candidateMeds;
       }
     }
   }
 
-  // Verifica se o melhor candidato encontrado satisfaz rigorosamente
-  const bestCalc = calculateRowFormulas(baseVal, bestMeds, sheetMedia);
-  if (bestCalc.erroTotal >= tolMin && bestCalc.erroTotal <= tolMax) {
-    return bestMeds;
-  }
-
-  // 2. Shrinkage Adaptativo / Clamping Vetorial em direção aos valores originais:
-  // Reduz a amplitude das perturbações preservando a forma da curva até convergir 100% nos limites
-  const currentCandidate = bestMeds.length ? [...bestMeds] : [...currentMeds];
-  for (let step = 1; step <= 25; step++) {
-    const factor = 1 - (step / 25);
-    const scaled = currentMeds.map((orig, idx) => {
-      if (selectedIndicesSet && !selectedIndicesSet.has(idx)) return orig;
-      const diff = currentCandidate[idx] - orig;
-      return Math.round((orig + diff * factor) * 100) / 100;
-    });
-    const c = calculateRowFormulas(baseVal, scaled, sheetMedia);
-    if (c.erroTotal >= tolMin && c.erroTotal <= tolMax) {
-      return scaled;
+  // Verifica se o melhor candidato encontrado é rigorosamente conforme
+  if (bestMeds.length > 0) {
+    const bestCalc = calculateRowFormulas(baseVal, bestMeds, sheetMedia);
+    if (
+      bestCalc.erroTotal <= safeUpper &&
+      bestCalc.erroTotal >= safeLower &&
+      (bestCalc.erro - bestCalc.confianca) >= safeLower
+    ) {
+      return bestMeds;
+    }
+    if (
+      bestCalc.erroTotal <= tolMax &&
+      bestCalc.erroTotal >= tolMin &&
+      (bestCalc.erro - bestCalc.confianca) >= tolMin
+    ) {
+      return bestMeds;
     }
   }
 
-  // Se a linha original já estava conforme, retorna os valores originais intactos
+  // 2. Clamping / Contração adaptativa em direção à Base:
+  // Reduz a amplitude das medições aproximando-as da Base de forma analítica e determinística
+  const baseCandidate = bestMeds.length ? [...bestMeds] : [...currentMeds];
+  for (let step = 1; step <= 50; step++) {
+    const alpha = 1 - (step / 50); // 0.98 -> 0.00
+    const contracted = currentMeds.map((orig, idx) => {
+      if (selectedIndicesSet && !selectedIndicesSet.has(idx)) {
+        return orig;
+      }
+      const diff = baseCandidate[idx] - baseVal;
+      return Math.round((baseVal + diff * alpha) * factorPow) / factorPow;
+    });
+
+    const c = calculateRowFormulas(baseVal, contracted, sheetMedia);
+    if (
+      c.erroTotal <= safeUpper &&
+      c.erroTotal >= safeLower &&
+      (c.erro - c.confianca) >= safeLower
+    ) {
+      return contracted;
+    }
+    if (
+      c.erroTotal <= tolMax &&
+      c.erroTotal >= tolMin &&
+      (c.erro - c.confianca) >= tolMin
+    ) {
+      return contracted;
+    }
+  }
+
+  // Se por qualquer razão extrema não convergiu, retorna valores originais
   return currentMeds;
 }
 

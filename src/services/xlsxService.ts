@@ -2,6 +2,7 @@ import ExcelJS from 'exceljs';
 import fs from 'node:fs';
 import path from 'node:path';
 import { applyFormulasToMatrix, generateValidRowMeasurements, detectRowColumnMap } from '../ui/formulas.js';
+import { updateAllDateFields } from '../ui/osSubstitution.js';
 
 export interface XlsxCellData {
   address: string;
@@ -231,22 +232,13 @@ export async function randomizeMeasurements(
 
         if (currentMeds.length === 0) continue;
 
-        let sheetMedia: number | undefined = undefined;
-        if (colMap.colMedia > 0 && row[colMap.colMedia - 1]) {
-          const mCell = row[colMap.colMedia - 1];
-          const v = typeof mCell?.value === 'number'
-            ? mCell.value
-            : parseFloat(String(mCell?.displayValue || '').replace(',', '.'));
-          if (!isNaN(v) && v > 0) sheetMedia = v;
-        }
-
         let rowTolMax: number | undefined = undefined;
         if (colMap.colTolMax > 0 && row[colMap.colTolMax - 1]) {
           const tCell = row[colMap.colTolMax - 1];
           const v = typeof tCell?.value === 'number'
             ? tCell.value
             : parseFloat(String(tCell?.displayValue || '').replace(',', '.'));
-          if (!isNaN(v) && v > 0) rowTolMax = v;
+          if (!isNaN(v) && v !== 0) rowTolMax = Math.abs(v);
         }
 
         let rowTolMin: number | undefined = undefined;
@@ -255,7 +247,7 @@ export async function randomizeMeasurements(
           const v = typeof tCell?.value === 'number'
             ? tCell.value
             : parseFloat(String(tCell?.displayValue || '').replace(',', '.'));
-          if (!isNaN(v) && v < 0) rowTolMin = v;
+          if (!isNaN(v) && v !== 0) rowTolMin = -Math.abs(v);
         }
 
         const validMeds = generateValidRowMeasurements(
@@ -263,7 +255,7 @@ export async function randomizeMeasurements(
           currentMeds,
           maxPercent,
           undefined,
-          sheetMedia,
+          undefined,
           50,
           r,
           rowTolMax,
@@ -293,6 +285,9 @@ export async function randomizeMeasurements(
 
     applyFormulasToMatrix(sheet.matrix, worksheet);
   }
+
+  // Atualiza todas as datas da planilha para a data atual (dia de agora)
+  updateAllDateFields(parsed, workbook);
 
   const dir = path.dirname(outputPath);
   if (!fs.existsSync(dir)) {

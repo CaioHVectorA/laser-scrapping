@@ -114,7 +114,7 @@ function generateLaudoCsv(record: DbRecord): string {
   const equipamentoLinha = cleanText(record.equipamento_linha_uso) || 'Laser';
   const equipamentoModelo = cleanText(record.equipamento_modelo) || 'UroPulse';
   const equipamentoSerie = cleanText(record.equipamento_codigo) || '';
-  const dataExtenso = formatDateExtenso(record.data_entrada || record.scraped_at);
+  const dataExtenso = formatDateExtenso('');
 
   const lines: string[] = [
     ',,,,,,,,,,,',

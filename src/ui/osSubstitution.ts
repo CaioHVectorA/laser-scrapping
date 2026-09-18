@@ -123,6 +123,7 @@ export function formatDateExtenso(dateStr?: string): string {
 export interface OsSubstitutionOptions {
   randomizeSegElet?: boolean;
   segEletPct?: number; // Padrão: 0.30 (30%)
+  customDate?: Date; // Data customizada (padrão: hoje)
 }
 
 /**
@@ -161,7 +162,8 @@ export function applyOsSubstitutions(
   const tecnicoUpper = tecnicoNome.toUpperCase();
 
   const equipamentoSerie = cleanText(order.equipamento_codigo) || '';
-  const dataExtenso = formatDateExtenso(order.data_entrada || order.scraped_at);
+  // Conforme solicitação do usuário, a data deve SEMPRE ser atualizada para o dia de agora
+  const dataExtenso = formatDateExtenso(options?.customDate ? options.customDate.toISOString() : undefined);
 
   const helperSetCell = (rIdx: number, cIdx: number, val: string, category: SubstitutionDiffItem['fieldCategory'], label: string) => {
     if (rIdx < 0 || rIdx >= matrix.length) return;
@@ -313,7 +315,7 @@ export function applyOsSubstitutions(
     }
   }
 
-  // ═══ 4. DATAS DO ENSAIO E AVALIAÇÃO ═══
+  // ═══ 4. DATAS DO ENSAIO, AVALIAÇÃO E ASSINATURA (SEMPRE ATUALIZADAS PARA O DIA DE HOJE) ═══
   for (let r = 0; r < matrix.length; r++) {
     const row = matrix[r];
     if (!row) continue;
@@ -333,6 +335,14 @@ export function applyOsSubstitutions(
         helperSetCell(r, c, dataAvaliacaoStr, 'Datas', 'Data da Avaliação');
       }
     }
+  }
+
+  // Varredura universal de datas em todas as partes da planilha, principalmente na assinatura
+  const dateRes = updateAllDateFields(cloned, workbookRef, options?.customDate);
+  if (dateRes.replacedCount > 0) {
+    diffs.push(...dateRes.diffs);
+    replacedCount += dateRes.replacedCount;
+    cloned = dateRes.updatedParsedData;
   }
 
   // ═══ 5. SEGURANÇA ELÉTRICA: RANDOMIZAR 30% DOS DADOS DA 1ª ABA ═══
@@ -497,6 +507,168 @@ export function randomizeSegEletFields(
       }
     }
   }
+
+  return {
+    updatedParsedData: cloned,
+    diffs,
+    replacedCount
+  };
+}
+
+/**
+ * Atualiza todas as datas presentes na planilha para o dia de agora (data atual do sistema).
+ * Varre todas as abas, com foco especial na aba de certificado/laudo (1ª aba) e na área de assinaturas.
+ */
+export function updateAllDateFields(
+  parsedData: XlsxParsed,
+  workbookRef?: any,
+  customDate?: Date
+): SubstitutionResult {
+  const cloned = JSON.parse(JSON.stringify(parsedData)) as XlsxParsed;
+  const diffs: SubstitutionDiffItem[] = [];
+  let replacedCount = 0;
+
+  if (!cloned.sheets || cloned.sheets.length === 0) {
+    return { updatedParsedData: cloned, diffs, replacedCount: 0 };
+  }
+
+  const now = customDate || new Date();
+  const dia = now.getDate();
+  const mesIdx = now.getMonth();
+  const ano = now.getFullYear();
+
+  const meses = [
+    'JANEIRO', 'FEVEREIRO', 'MARÇO', 'ABRIL', 'MAIO', 'JUNHO',
+    'JULHO', 'AGOSTO', 'SETEMBRO', 'OUTUBRO', 'NOVEMBRO', 'DEZEMBRO'
+  ];
+  const mesesMin = [
+    'janeiro', 'fevereiro', 'março', 'abril', 'maio', 'junho',
+    'julho', 'agosto', 'setembro', 'outubro', 'novembro', 'dezembro'
+  ];
+
+  const dataExtensoUpper = `${dia} DE ${meses[mesIdx]} DE ${ano}`;
+  const dataExtensoMin = `${dia} de ${mesesMin[mesIdx]} de ${ano}`;
+  const dataCurta = `${String(dia).padStart(2, '0')}/${String(mesIdx + 1).padStart(2, '0')}/${ano}`;
+
+  cloned.sheets.forEach((sheet, sheetIdx) => {
+    const matrix = sheet.matrix;
+    const excelWorksheet = workbookRef?.getWorksheet(sheet.name);
+
+    const helperSet = (rIdx: number, cIdx: number, val: string, label: string) => {
+      if (rIdx < 0 || rIdx >= matrix.length) return;
+      const row = matrix[rIdx];
+      if (!row) return;
+      const cell = row[cIdx];
+      if (!cell) return;
+
+      const oldDisplay = String(cell.displayValue || cell.value || '').trim();
+      if (oldDisplay !== val) {
+        diffs.push({
+          fieldCategory: 'Datas',
+          label: `${label} (${sheet.name})`,
+          address: cell.address,
+          oldValue: oldDisplay,
+          newValue: val
+        });
+        cell.value = val;
+        cell.displayValue = val;
+        if (sheet.cells && sheet.cells[cell.address]) {
+          sheet.cells[cell.address].value = val;
+          sheet.cells[cell.address].displayValue = val;
+        }
+        if (excelWorksheet) {
+          try {
+            excelWorksheet.getRow(rIdx + 1).getCell(cIdx + 1).value = val;
+          } catch {}
+        }
+        replacedCount++;
+      }
+    };
+
+    for (let r = 0; r < matrix.length; r++) {
+      const row = matrix[r];
+      if (!row) continue;
+
+      for (let c = 0; c < row.length; c++) {
+        const cell = row[c];
+        if (!cell) continue;
+
+        let text = String(cell.displayValue || cell.value || '').trim();
+        if (!text) continue;
+
+        // 1. Frases de Ensaio / Avaliação / Laudo
+        if (/ENSAIO\s+(?:REALIZADO\s+NO\s+DIA|DATA)/i.test(text)) {
+          const newText = text.replace(/(?:REALIZADO\s+NO\s+DIA|DATA\s*:?)\s*([^\n\r,]+)/i, `REALIZADO NO DIA ${dataExtensoUpper}`);
+          if (newText !== text) {
+            helperSet(r, c, newText, 'Data do Ensaio');
+            continue;
+          }
+        }
+        if (/AVALIA[ÇC][ÃA]O\s+(?:REALIZADA\s+NO\s+DIA|DATA)/i.test(text)) {
+          const newText = text.replace(/(?:REALIZADA\s+NO\s+DIA|DATA\s*:?)\s*([^\n\r,]+)/i, `REALIZADA NO DIA ${dataExtensoUpper}`);
+          if (newText !== text) {
+            helperSet(r, c, newText, 'Data da Avaliação');
+            continue;
+          }
+        }
+
+        // 2. Local e Data na Seção de Assinatura (ex: "Belo Horizonte, 13 de agosto de 2026")
+        if (/(?:Belo\s*Horizonte|Rio\s*de\s*Janeiro|S[ãa]o\s*Paulo|[A-Za-zÀ-ÿ\s]+),\s*\d{1,2}\s+de\s+[a-zA-ZçÇ]+\s+de\s+\d{4}/i.test(text)) {
+          const newText = text.replace(/([A-Za-zÀ-ÿ\s]+),\s*\d{1,2}\s+de\s+[a-zA-ZçÇ]+\s+de\s+\d{4}/i, `$1, ${dataExtensoMin}`);
+          if (newText !== text) {
+            helperSet(r, c, newText, 'Data da Assinatura / Local');
+            continue;
+          }
+        }
+
+        // 3. Padrão Extenso Isolado ou em Frase: "18 DE AGOSTO DE 2026"
+        if (/\b\d{1,2}\s+DE\s+(?:JANEIRO|FEVEREIRO|MARÇO|ABRIL|MAIO|JUNHO|JULHO|AGOSTO|SETEMBRO|OUTUBRO|NOVEMBRO|DEZEMBRO)\s+DE\s+\d{4}\b/i.test(text)) {
+          const newText = text.replace(/\b\d{1,2}\s+DE\s+(?:JANEIRO|FEVEREIRO|MARÇO|ABRIL|MAIO|JUNHO|JULHO|AGOSTO|SETEMBRO|OUTUBRO|NOVEMBRO|DEZEMBRO)\s+DE\s+\d{4}\b/gi, dataExtensoUpper);
+          if (newText !== text) {
+            helperSet(r, c, newText, 'Data por Extenso');
+            continue;
+          }
+        }
+
+        // 4. Padrão Extenso minúsculo: "18 de agosto de 2026"
+        if (/\b\d{1,2}\s+de\s+(?:janeiro|fevereiro|março|abril|maio|junho|julho|agosto|setembro|outubro|novembro|dezembro)\s+de\s+\d{4}\b/i.test(text)) {
+          const newText = text.replace(/\b\d{1,2}\s+de\s+(?:janeiro|fevereiro|março|abril|maio|junho|julho|agosto|setembro|outubro|novembro|dezembro)\s+de\s+\d{4}\b/gi, dataExtensoMin);
+          if (newText !== text) {
+            helperSet(r, c, newText, 'Data por Extenso (Assinatura)');
+            continue;
+          }
+        }
+
+        // 5. Rótulo com Data: "Data do Laudo: 13/08/2026", "Data: 13/08/2026", "Emissão: 13/08/2026"
+        if (/^(?:data\s*(?:do\s*laudo|da\s*assinatura|de\s*emiss[ãa]o|do\s*ensaio|da\s*calibra[çc][ãa]o)?|emitido\s*em)\s*[:=]\s*\d{1,2}\/\d{1,2}\/\d{2,4}/i.test(text)) {
+          const newText = text.replace(/(\d{1,2}\/\d{1,2}\/\d{2,4})/, dataCurta);
+          if (newText !== text) {
+            helperSet(r, c, newText, 'Data do Documento');
+            continue;
+          }
+        }
+
+        // 6. Célula de rótulo onde a data está na célula adjacente (ex: Col A = "Data:", Col B = "13/08/2026")
+        if (/^(?:data(?:\s+do\s+laudo|\s+da\s+assinatura|\s+de\s+emiss[ãa]o|\s+do\s+ensaio|\s+da\s+calibra[çc][ãa]o)?|data\s*:)$/i.test(text)) {
+          for (let colOff = 1; colOff <= 3; colOff++) {
+            const adjCell = row[c + colOff];
+            if (!adjCell) continue;
+            const adjText = String(adjCell.displayValue || adjCell.value || '').trim();
+            if (/^\d{1,2}\/\d{1,2}\/\d{2,4}$/.test(adjText)) {
+              helperSet(r, c + colOff, dataCurta, 'Data Adjacente');
+              break;
+            }
+          }
+        }
+
+        // 7. Célula standalone de data curta na 1ª folha ou cabeçalhos (mas fora de colunas de medição med1..med5)
+        if (sheetIdx === 0 && /^\d{1,2}\/\d{1,2}\/\d{4}$/.test(text)) {
+          helperSet(r, c, dataCurta, 'Data Curta (Laudo)');
+          continue;
+        }
+      }
+    }
+  });
 
   return {
     updatedParsedData: cloned,

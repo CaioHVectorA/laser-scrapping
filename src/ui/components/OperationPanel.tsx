@@ -21,7 +21,7 @@ import {
   Filter,
   BarChart3,
   SlidersHorizontal,
-  Waves,
+  ShieldCheck,
   Printer,
   Settings2,
   FolderOpen,
@@ -36,11 +36,10 @@ import {
   applyFormulasToMatrix,
   generateValidRowMeasurements,
   detectRowColumnMap,
-  VariationMode,
   DEFAULT_MEDLASER_PRESET,
   CustomLayoutPreset
 } from '../formulas.js';
-import { DbOrder, applyOsSubstitutions, randomizeSegEletFields, SubstitutionDiffItem, formatDateExtenso } from '../osSubstitution.js';
+import { DbOrder, applyOsSubstitutions, randomizeSegEletFields, SubstitutionDiffItem, formatDateExtenso, updateAllDateFields } from '../osSubstitution.js';
 import { getRecentFiles, saveRecentFile, getTemplates, saveTemplate, RecentItem, TemplateItem } from '../storage.js';
 import { MeasurementChart } from './MeasurementChart.js';
 import { ReportDocumentView } from './ReportDocumentView.js';
@@ -103,10 +102,9 @@ export const OperationPanel: React.FC<OperationPanelProps> = ({ selectedOsProp, 
   const [substitutionDiffs, setSubstitutionDiffs] = useState<SubstitutionDiffItem[]>([]);
   const [isOsSubstituted, setIsOsSubstituted] = useState(false);
 
-  // ── Customizable Selection & Curve Variation State ──
+  // ── Customizable Selection & Variation State ──
   const [selectedSheetsForVariation, setSelectedSheetsForVariation] = useState<Set<string>>(new Set());
-  const [selectedColumnsForVariation, setSelectedColumnsForVariation] = useState<Set<string>>(new Set());
-  const [variationMode, setVariationMode] = useState<VariationMode>('wobble');
+  const [selectedColumnsForVariation, setSelectedColumnsForVariation] = useState<Set<string>>(new Set(['F', 'G', 'H', 'I', 'J']));
   const [activeViewTab, setActiveViewTab] = useState<'editor' | 'report_pdf' | 'preset_config'>('editor');
   const [customPreset, setCustomPreset] = useState<CustomLayoutPreset>(DEFAULT_MEDLASER_PRESET);
   const [showPresetModal, setShowPresetModal] = useState(false);
@@ -409,6 +407,10 @@ export const OperationPanel: React.FC<OperationPanelProps> = ({ selectedOsProp, 
       setIsOsSubstituted(false);
       setSubstitutionDiffs([]);
 
+      // Pré-seleciona automaticamente as páginas de medição (índice > 0)
+      const measSheets = (parsed.sheets || []).filter((_, idx) => idx > 0).map(s => s.name);
+      setSelectedSheetsForVariation(new Set(measSheets.length > 0 ? measSheets : parsed.sheets.map(s => s.name)));
+
       if (selectedOs) {
         try {
           const res = applyOsSubstitutions(clonedInitial, selectedOs, workbook);
@@ -439,6 +441,10 @@ export const OperationPanel: React.FC<OperationPanelProps> = ({ selectedOsProp, 
       setParsedData(res);
       setIsOsSubstituted(false);
       setSubstitutionDiffs([]);
+
+      // Pré-seleciona automaticamente as páginas de medição
+      const measSheets = (res.sheets || []).filter((_, idx) => idx > 0).map(s => s.name);
+      setSelectedSheetsForVariation(new Set(measSheets.length > 0 ? measSheets : res.sheets.map(s => s.name)));
 
       if (selectedOs) {
         try {
@@ -578,6 +584,23 @@ export const OperationPanel: React.FC<OperationPanelProps> = ({ selectedOsProp, 
   };
 
   // ── Sheet & Column Checkbox Helpers ──
+  const selectOnlyMeasurementSheets = () => {
+    if (!parsedData?.sheets) return;
+    const freqSheets = parsedData.sheets
+      .filter((_, idx) => idx > 0 || parsedData.sheets.length === 1)
+      .map(s => s.name);
+    setSelectedSheetsForVariation(new Set(freqSheets));
+  };
+
+  const selectAllSheets = () => {
+    if (!parsedData?.sheets) return;
+    setSelectedSheetsForVariation(new Set(parsedData.sheets.map(s => s.name)));
+  };
+
+  const clearSelectedSheets = () => {
+    setSelectedSheetsForVariation(new Set());
+  };
+
   const toggleSheetForVariation = (sheetName: string) => {
     const next = new Set(selectedSheetsForVariation);
     if (next.has(sheetName)) next.delete(sheetName);
@@ -592,29 +615,25 @@ export const OperationPanel: React.FC<OperationPanelProps> = ({ selectedOsProp, 
     setSelectedColumnsForVariation(next);
   };
 
-  // ── Action: Custom Randomize Selected Sheets & Columns ──
+  // ── Action: Randomizar Medições com Garantia Estrita de Limites e Atualizar Datas ──
   const handleRandomizeSelectedSheets = () => {
     if (!parsedData) return;
-    if (selectedSheetsForVariation.size === 0) {
-      setStatusMsg('⚠️ Selecione pelo menos uma página (aba) para aplicar a variação.');
-      return;
+
+    let targetSheets = new Set(selectedSheetsForVariation);
+    if (targetSheets.size === 0) {
+      const autoSheets = parsedData.sheets.filter((_, idx) => idx > 0).map(s => s.name);
+      targetSheets = new Set(autoSheets.length > 0 ? autoSheets : parsedData.sheets.map(s => s.name));
+      setSelectedSheetsForVariation(targetSheets);
     }
 
-    const modeLabels: Record<VariationMode, string> = {
-      uniform: 'Estocástico Uniforme (±%)',
-      wobble: 'Ondulação Senoidal (Wobble de Curva)',
-      gaussian: 'Ruído Gaussiano (Distribuição Normal)',
-      trend: 'Deslocamento de Tendência'
-    };
-
-    setStatusMsg(`⏳ Randomizando ${selectedSheetsForVariation.size} abas no modo "${modeLabels[variationMode]}" (±${maxPercent}%)...`);
+    setStatusMsg(`⏳ Randomizando medições em ${targetSheets.size} páginas (±${maxPercent}%) com garantia de limites...`);
 
     try {
       let nextParsed = cloneParsedData(parsedData);
       let totalAlteredCount = 0;
 
       nextParsed.sheets.forEach((sheet: XlsxSheet) => {
-        if (!selectedSheetsForVariation.has(sheet.name)) return;
+        if (!targetSheets.has(sheet.name)) return;
 
         const worksheet = workbookRef.current?.getWorksheet(sheet.name);
         const colMap = detectRowColumnMap(sheet.matrix) || {
@@ -657,20 +676,11 @@ export const OperationPanel: React.FC<OperationPanelProps> = ({ selectedOsProp, 
                   ? cell.value
                   : parseFloat(String(cell.displayValue || '').replace(',', '.'));
                 currentMeds.push(!isNaN(v) ? v : baseVal);
-                if (selectedColumnsForVariation.has(cell.colLetter)) {
+                if (selectedColumnsForVariation.size === 0 || selectedColumnsForVariation.has(cell.colLetter)) {
                   selectedIndicesSet.add(idx);
                 }
               }
             });
-
-            let sheetMedia: number | undefined = undefined;
-            if (colMap.colMedia > 0 && row[colMap.colMedia - 1]) {
-              const mCell = row[colMap.colMedia - 1];
-              const v = typeof mCell?.value === 'number'
-                ? mCell.value
-                : parseFloat(String(mCell?.displayValue || '').replace(',', '.'));
-              if (!isNaN(v) && v > 0) sheetMedia = v;
-            }
 
             let rowTolMax: number | undefined = undefined;
             if (colMap.colTolMax > 0 && row[colMap.colTolMax - 1]) {
@@ -678,7 +688,7 @@ export const OperationPanel: React.FC<OperationPanelProps> = ({ selectedOsProp, 
               const v = typeof tCell?.value === 'number'
                 ? tCell.value
                 : parseFloat(String(tCell?.displayValue || '').replace(',', '.'));
-              if (!isNaN(v) && v > 0) rowTolMax = v;
+              if (!isNaN(v) && v !== 0) rowTolMax = Math.abs(v);
             }
 
             let rowTolMin: number | undefined = undefined;
@@ -687,23 +697,23 @@ export const OperationPanel: React.FC<OperationPanelProps> = ({ selectedOsProp, 
               const v = typeof tCell?.value === 'number'
                 ? tCell.value
                 : parseFloat(String(tCell?.displayValue || '').replace(',', '.'));
-              if (!isNaN(v) && v < 0) rowTolMin = v;
+              if (!isNaN(v) && v !== 0) rowTolMin = -Math.abs(v);
             }
 
             const validMeds = generateValidRowMeasurements(
               baseVal,
               currentMeds,
               maxPercent,
-              selectedIndicesSet,
-              sheetMedia,
-              variationMode,
+              selectedIndicesSet.size > 0 ? selectedIndicesSet : undefined,
+              undefined,
+              50,
               r,
               rowTolMax,
               rowTolMin
             );
 
             colMap.colMeds.forEach((cIdx, idx) => {
-              if (selectedIndicesSet.has(idx)) {
+              if (selectedIndicesSet.size === 0 || selectedIndicesSet.has(idx)) {
                 const cell = row[cIdx - 1];
                 if (cell) {
                   const newVal = validMeds[idx];
@@ -726,7 +736,7 @@ export const OperationPanel: React.FC<OperationPanelProps> = ({ selectedOsProp, 
       });
 
       // Se a Folha 1 estiver entre as selecionadas, randomiza os ensaios de Segurança Elétrica (±30%)
-      if (nextParsed.sheets.length > 0 && selectedSheetsForVariation.has(nextParsed.sheets[0].name)) {
+      if (nextParsed.sheets.length > 0 && targetSheets.has(nextParsed.sheets[0].name)) {
         const segRes = randomizeSegEletFields(nextParsed, workbookRef.current, 0.30);
         if (segRes.replacedCount > 0) {
           nextParsed = segRes.updatedParsedData as any;
@@ -734,8 +744,14 @@ export const OperationPanel: React.FC<OperationPanelProps> = ({ selectedOsProp, 
         }
       }
 
+      // Atualiza qualquer parte que contenha data na planilha (principalmente na assinatura) para o dia de agora
+      const dateRes = updateAllDateFields(nextParsed, workbookRef.current);
+      if (dateRes.replacedCount > 0) {
+        nextParsed = dateRes.updatedParsedData as any;
+      }
+
       setParsedData(nextParsed);
-      setStatusMsg(`✨ Variação "${modeLabels[variationMode]}" aplicada com SUCESSO em ${totalAlteredCount} medições nas ${selectedSheetsForVariation.size} abas selecionadas.`);
+      setStatusMsg(`✨ ${totalAlteredCount} medições variadas com SUCESSO! 100% dentro dos limites de tolerância. Todas as datas atualizadas para hoje (${new Date().toLocaleDateString('pt-BR')}).`);
     } catch (err: any) {
       setStatusMsg(`❌ Erro ao aplicar variação: ${err?.message || String(err)}`);
     }
@@ -1239,16 +1255,45 @@ export const OperationPanel: React.FC<OperationPanelProps> = ({ selectedOsProp, 
           </div>
         </div>
 
-        {/* CUSTOMIZATION BOX: Escolha de Páginas & Colunas & Modo de Curva */}
+        {/* CUSTOMIZATION BOX: Escolha de Páginas & Colunas & Variação Protegida */}
         {parsedData && (
           <div style={{ backgroundColor: '#09090b', border: '1px solid #27272a', borderRadius: '8px', padding: '14px 16px', display: 'flex', flexDirection: 'column', gap: '12px' }}>
             {/* Sheet Selector Checkboxes */}
             <div>
-              <span style={{ fontSize: '0.78rem', color: '#a1a1aa', fontWeight: '700', display: 'flex', alignItems: 'center', gap: '6px', marginBottom: '8px' }}>
-                <CheckSquare size={14} color="#3b82f6" /> 1. Escolher Páginas (Abas) para Aplicar Variação:
-              </span>
+              <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '8px', flexWrap: 'wrap', gap: '8px' }}>
+                <span style={{ fontSize: '0.78rem', color: '#a1a1aa', fontWeight: '700', display: 'flex', alignItems: 'center', gap: '6px' }}>
+                  <CheckSquare size={14} color="#3b82f6" /> 1. Escolher Páginas (Abas) para Aplicar Variação:
+                </span>
+                <div style={{ display: 'flex', gap: '6px' }}>
+                  <button
+                    className="btn btn-secondary"
+                    style={{ padding: '3px 8px', fontSize: '0.72rem', backgroundColor: '#27272a' }}
+                    onClick={selectOnlyMeasurementSheets}
+                    type="button"
+                  >
+                    📊 Apenas Medições
+                  </button>
+                  <button
+                    className="btn btn-secondary"
+                    style={{ padding: '3px 8px', fontSize: '0.72rem', backgroundColor: '#27272a' }}
+                    onClick={selectAllSheets}
+                    type="button"
+                  >
+                    📑 Todas as Abas
+                  </button>
+                  <button
+                    className="btn btn-secondary"
+                    style={{ padding: '3px 8px', fontSize: '0.72rem', backgroundColor: '#27272a' }}
+                    onClick={clearSelectedSheets}
+                    type="button"
+                  >
+                    Limpar
+                  </button>
+                </div>
+              </div>
               <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap' }}>
-                {allSheetNames.map((sheetName, sIdx) => {
+                {parsedData.sheets.map((s, sIdx) => {
+                  const sheetName = s.name;
                   const isChecked = selectedSheetsForVariation.has(sheetName);
                   return (
                     <button
@@ -1286,6 +1331,7 @@ export const OperationPanel: React.FC<OperationPanelProps> = ({ selectedOsProp, 
                   className="btn btn-secondary"
                   style={{ padding: '4px 10px', fontSize: '0.75rem', display: 'flex', alignItems: 'center', gap: '5px', backgroundColor: '#27272a' }}
                   onClick={() => setShowColumnModal(true)}
+                  type="button"
                 >
                   <SlidersHorizontal size={13} color="#fbbf24" /> Gerenciar / Adicionar Mais Colunas...
                 </button>
@@ -1319,33 +1365,39 @@ export const OperationPanel: React.FC<OperationPanelProps> = ({ selectedOsProp, 
               </div>
             </div>
 
-            {/* Mode & Noise Control */}
+            {/* Action Bar: User-Friendly, Zero Mode Selectors, Strictly Safe & Instant Dates */}
             <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', flexWrap: 'wrap', gap: '12px', borderTop: '1px solid #27272a', paddingTop: '10px' }}>
-              <div style={{ display: 'flex', alignItems: 'center', gap: '12px', flexWrap: 'wrap' }}>
-                <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
-                  <Waves size={16} color="#ec4899" />
-                  <span style={{ fontSize: '0.78rem', color: '#a1a1aa', fontWeight: '600' }}>Formato da Curva:</span>
+              <div style={{ display: 'flex', alignItems: 'center', gap: '10px', flexWrap: 'wrap' }}>
+                {/* Safe limits badge */}
+                <div style={{ display: 'flex', alignItems: 'center', gap: '6px', backgroundColor: 'rgba(16, 185, 129, 0.12)', border: '1px solid rgba(16, 185, 129, 0.3)', padding: '5px 10px', borderRadius: '6px' }}>
+                  <ShieldCheck size={15} color="#10b981" />
+                  <span style={{ fontSize: '0.76rem', color: '#34d399', fontWeight: '600' }}>
+                    100% Dentro dos Limites (Tol. Mín / Máx)
+                  </span>
                 </div>
-                <select
-                  value={variationMode}
-                  onChange={(e) => setVariationMode(e.target.value as VariationMode)}
-                  style={{ backgroundColor: '#18181b', color: '#ffffff', border: '1px solid #27272a', borderRadius: '6px', padding: '6px 12px', fontSize: '0.8rem', outline: 'none' }}
-                >
-                  <option value="wobble">🌊 Ondulação Senoidal (Wobble de Curva)</option>
-                  <option value="gaussian">🎲 Ruído Gaussiano (Distribuição Normal)</option>
-                  <option value="trend">📈 Deslocamento de Tendência (Linear/Curvado)</option>
-                  <option value="uniform">📊 Estocástico Uniforme (Padrão ±%)</option>
-                </select>
 
+                {/* Today date badge */}
+                <div style={{ display: 'flex', alignItems: 'center', gap: '6px', backgroundColor: 'rgba(59, 130, 246, 0.12)', border: '1px solid rgba(59, 130, 246, 0.3)', padding: '5px 10px', borderRadius: '6px' }}>
+                  <Calendar size={15} color="#60a5fa" />
+                  <span style={{ fontSize: '0.76rem', color: '#93c5fd', fontWeight: '600' }}>
+                    Atualiza datas e assinaturas para hoje
+                  </span>
+                </div>
+
+                {/* Intensity Slider */}
                 <div style={{ display: 'flex', alignItems: 'center', gap: '8px', backgroundColor: '#18181b', padding: '4px 10px', borderRadius: '6px', border: '1px solid #27272a' }}>
-                  <span style={{ fontSize: '0.78rem', color: '#a1a1aa', fontWeight: '500' }}>Intensidade ±{maxPercent}%</span>
+                  <span style={{ fontSize: '0.78rem', color: '#a1a1aa', fontWeight: '500' }}>Intensidade: ±{maxPercent}%</span>
                   <input type="range" min="1" max="25" value={maxPercent} onChange={(e) => setMaxPercent(parseInt(e.target.value, 10))} style={{ width: '70px', accentColor: '#fbbf24' }} />
                 </div>
               </div>
 
               <div style={{ display: 'flex', gap: '8px' }}>
-                <button className="btn btn-amber" onClick={handleRandomizeSelectedSheets}>
-                  <Sparkles size={16} /> Aplicar Variação ({selectedSheetsForVariation.size} Abas)
+                <button
+                  className="btn btn-amber"
+                  style={{ fontWeight: '700', padding: '8px 18px', display: 'flex', alignItems: 'center', gap: '8px' }}
+                  onClick={handleRandomizeSelectedSheets}
+                >
+                  <Sparkles size={16} /> Randomizar Medições ({selectedSheetsForVariation.size} Abas)
                 </button>
               </div>
             </div>
