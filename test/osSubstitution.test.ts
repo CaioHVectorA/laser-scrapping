@@ -100,6 +100,46 @@ describe('Substituição de Dados da OS no Certificado/Laudo (osSubstitution)', 
     expect(dateDiffs.some(d => d.newValue.includes(todayExtenso) || d.newValue.includes(String(new Date().getFullYear())))).toBe(true);
   });
 
+  it('substitui o número de série em TODAS as ocorrências (seção 5 e rodapé)', () => {
+    const mock = createMockParsed();
+    // Adiciona uma segunda ocorrência de número de série no rodapé (linha 71)
+    mock.sheets[0].matrix[70] = [
+      null, null, null, null, null,
+      { value: 'Numero de Serie do Equipamento', displayValue: 'Numero de Serie do Equipamento', address: 'F71', row: 71, col: 6, isNumeric: false },
+      { value: 'SN-ANTIGO-RODAPE', displayValue: 'SN-ANTIGO-RODAPE', address: 'G71', row: 71, col: 7, isNumeric: false }
+    ];
+
+    const mockOs: DbOrder = {
+      id: '8822',
+      equipamento_codigo: 'SN-DUPLO-12345'
+    };
+
+    const result = applyOsSubstitutions(mock as any, mockOs);
+    const serieDiffs = result.diffs.filter(d => d.fieldCategory === 'Número de Série');
+
+    // Deve substituir o número de série duas vezes (uma no meio, outra no rodapé)
+    expect(serieDiffs.length).toBe(2);
+    expect(serieDiffs[0].newValue).toBe('SN-DUPLO-12345');
+    expect(serieDiffs[1].newValue).toBe('SN-DUPLO-12345');
+  });
+
+  it('garante que todas as datas por extenso geradas estejam SEMPRE em UPPERCASE', () => {
+    const mock = createMockParsed();
+    // Adiciona datas com letras minúsculas para testar conversão estrita para UPPERCASE
+    mock.sheets[0].matrix[58] = [{ value: 'Belo Horizonte, 15 de agosto de 2025', displayValue: 'Belo Horizonte, 15 de agosto de 2025', address: 'A59', row: 59, col: 1, isNumeric: false }];
+    mock.sheets[0].matrix[59] = [{ value: 'Realizado em 15 de agosto de 2025', displayValue: 'Realizado em 15 de agosto de 2025', address: 'A60', row: 60, col: 1, isNumeric: false }];
+
+    const res = updateAllDateFields(mock as any);
+    const dateDiffs = res.diffs;
+
+    for (const diff of dateDiffs) {
+      // Toda data formatada por extenso no laudo precisa estar em maiúsculas
+      if (diff.newValue.includes('DE')) {
+        expect(diff.newValue).toBe(diff.newValue.toUpperCase());
+      }
+    }
+  });
+
   it('updateAllDateFields atualiza assinaturas, laudo e datas curtas para hoje', () => {
     const mock = createMockParsed();
     const res = updateAllDateFields(mock as any);

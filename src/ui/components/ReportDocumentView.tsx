@@ -45,7 +45,7 @@ export interface DocumentFields {
   voltagem: string;
   resistenciaTerra?: string;
   correnteFuga?: string;
-  addresses: Record<string, string>;
+  addresses: Record<string, string | string[]>;
 }
 
 /**
@@ -147,14 +147,25 @@ export function extractDocData(sheet?: XlsxSheet | null, order?: DbOrder | null)
         }
       }
 
-      // 3. NÚMERO DE SÉRIE (Seção 5: r > 40 para não pegar Fluke ESA612 na linha 31)
-      if (((/^N[úu]mero\s*de\s*S[ée]rie$/i.test(text) || /^Numero\s*de\s*Serie/i.test(text)) && r > 40)) {
+      // 3. NÚMERO DE SÉRIE (Seção 5 e Rodapé: r > 20)
+      if ((/^N[úu]mero\s*de\s*S[ée]rie/i.test(text) || /^Numero\s*de\s*Serie/i.test(text) || /^Nº?\s*de\s*S[ée]rie/i.test(text)) && r > 20) {
         for (let colOff = 1; colOff <= 8; colOff++) {
           const adjCell = row[c + colOff];
           const adjText = String(adjCell?.displayValue || adjCell?.value || '').trim();
           if (adjText && adjText !== text) {
-            data.equipamentoSerie = adjText;
-            data.addresses['equipamentoSerie'] = adjCell!.address;
+            if (!data.equipamentoSerie) {
+              data.equipamentoSerie = adjText;
+            }
+            const existing = data.addresses['equipamentoSerie'];
+            if (!existing) {
+              data.addresses['equipamentoSerie'] = adjCell!.address;
+            } else if (typeof existing === 'string') {
+              data.addresses['equipamentoSerie'] = [existing, adjCell!.address];
+            } else if (Array.isArray(existing)) {
+              if (!existing.includes(adjCell!.address)) {
+                existing.push(adjCell!.address);
+              }
+            }
             break;
           }
         }
@@ -166,8 +177,19 @@ export function extractDocData(sheet?: XlsxSheet | null, order?: DbOrder | null)
           const adjCell = row[c + colOff];
           const adjText = String(adjCell?.displayValue || adjCell?.value || '').trim();
           if (adjText && adjText !== text) {
-            data.osId = adjText.replace('#', '');
-            data.addresses['osId'] = adjCell!.address;
+            if (!data.osId) {
+              data.osId = adjText.replace('#', '');
+            }
+            const existing = data.addresses['osId'];
+            if (!existing) {
+              data.addresses['osId'] = adjCell!.address;
+            } else if (typeof existing === 'string') {
+              data.addresses['osId'] = [existing, adjCell!.address];
+            } else if (Array.isArray(existing)) {
+              if (!existing.includes(adjCell!.address)) {
+                existing.push(adjCell!.address);
+              }
+            }
             break;
           }
         }
@@ -260,21 +282,23 @@ export const ReportDocumentView: React.FC<ReportDocumentViewProps> = ({
 
       // Sincroniza com as células da planilha
       if (sheet) {
-        const addr = updated.addresses[key];
-        if (addr && sheet.cells[addr]) {
-          sheet.cells[addr].displayValue = val;
-          sheet.cells[addr].value = val;
+        const addrOrAddrs = updated.addresses[key];
+        const addrs = Array.isArray(addrOrAddrs) ? addrOrAddrs : addrOrAddrs ? [addrOrAddrs] : [];
+        for (const addr of addrs) {
+          if (addr && sheet.cells[addr]) {
+            sheet.cells[addr].displayValue = val;
+            sheet.cells[addr].value = val;
+          }
+          if (workbookRef && addr) {
+            try {
+              const ws = workbookRef.getWorksheet(sheet.name);
+              if (ws) ws.getCell(addr).value = val;
+            } catch {}
+          }
+          if (onCellChange && addr) {
+            onCellChange(addr, val);
+          }
         }
-        if (workbookRef && addr) {
-          try {
-            const ws = workbookRef.getWorksheet(sheet.name);
-            if (ws) ws.getCell(addr).value = val;
-          } catch {}
-        }
-      }
-
-      if (onCellChange && updated.addresses[key]) {
-        onCellChange(updated.addresses[key], val);
       }
       if (onDataChange) {
         onDataChange(updated as any);

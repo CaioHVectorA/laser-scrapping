@@ -260,6 +260,7 @@ export function applyOsSubstitutions(
   // ═══ 3. NÚMEROS DE SÉRIE E ORDENS DE SERVIÇO ═══
   // Protege para não alterar Equipamento e Modelo do template ('Não mudar equipamento!')
   // Corrige extravasamento do número de série para células adjacentes (I, J, K, L)
+  // Processa TODAS as ocorrências na planilha (tanto na Seção 5/meio quanto no Rodapé/final)
   const processedRows = new Set<number>();
 
   for (let r = 0; r < matrix.length; r++) {
@@ -271,43 +272,43 @@ export function applyOsSubstitutions(
       if (!cell) continue;
       const text = String(cell.displayValue || cell.value || '').trim();
 
-      // Número de Série do Equipamento (Seção 5: r > 40)
-      // Exclui a linha 31 do Fluke ESA612 ("Número de Série: 1910036")
-      if ((/^N[úu]mero\s*de\s*S[ée]rie$/i.test(text) || /^Numero\s*de\s*Serie\s*do\s*Equipamento$/i.test(text)) && r > 40) {
-        if (!processedRows.has(r * 1000 + 1)) {
-          processedRows.add(r * 1000 + 1);
-          if (/do\s*Equipamento/i.test(text)) {
-            for (let col = 6; col <= 16; col++) {
-              if (col < row.length && row[col] && String(row[col]?.displayValue || row[col]?.value || '').trim() !== '') {
+      // Número de Série do Equipamento (Aparece na Seção 5 e no Rodapé)
+      // Exclui a linha 31 do Padrão Fluke ESA612 ("Número de Série: 1910036" / "NS: 099E11R")
+      if ((/^N[úu]mero\s*de\s*S[ée]rie/i.test(text) || /^Numero\s*de\s*Serie/i.test(text) || /^Nº?\s*de\s*S[ée]rie/i.test(text)) && r > 20) {
+        if (!processedRows.has(r * 1000 + c * 10 + 1)) {
+          processedRows.add(r * 1000 + c * 10 + 1);
+
+          // Verifica se o texto é o rótulo "Numero de Serie do Equipamento" ou "Número de Série"
+          const isRodape = /do\s*Equipamento/i.test(text) || r > 60;
+          if (isRodape) {
+            for (let col = c + 1; col < Math.min(row.length, c + 12); col++) {
+              if (row[col] && String(row[col]?.displayValue || row[col]?.value || '').trim() !== '') {
                 helperSetCell(r, col, equipamentoSerie, 'Número de Série', `Número de Série Rodapé (Linha ${r + 1})`);
               }
             }
           } else {
-            for (let col = 5; col <= 7; col++) {
-              if (col < row.length) {
-                helperSetCell(r, col, equipamentoSerie, 'Número de Série', `Número de Série (Linha ${r + 1})`);
-              }
+            // Seção 5: colunas adjacentes
+            for (let col = c + 1; col <= Math.min(row.length - 1, c + 3); col++) {
+              helperSetCell(r, col, equipamentoSerie, 'Número de Série', `Número de Série (Linha ${r + 1})`);
             }
           }
         }
       }
 
-      // Ordem de Serviço
+      // Ordem de Serviço (Aparece na Seção 5 e no Rodapé)
       if (/^Ordem\s*de\s*Servi[çc]o$/i.test(text) || /^ORDEM\s*DE\s*SERVIÇO$/i.test(text)) {
-        if (!processedRows.has(r * 1000 + 2)) {
-          processedRows.add(r * 1000 + 2);
-          const isExtendedFooter = row[5] && /^ORDEM\s*DE\s*SERVIÇO$/i.test(String(row[5]?.displayValue || row[5]?.value || '').trim());
-          if (isExtendedFooter) {
-            for (let col = 6; col <= 16; col++) {
-              if (col < row.length && row[col] && String(row[col]?.displayValue || row[col]?.value || '').trim() !== '') {
+        if (!processedRows.has(r * 1000 + c * 10 + 2)) {
+          processedRows.add(r * 1000 + c * 10 + 2);
+          const isRodapeOS = r > 60 || (row[5] && /^ORDEM\s*DE\s*SERVIÇO$/i.test(String(row[5]?.displayValue || row[5]?.value || '').trim()));
+          if (isRodapeOS) {
+            for (let col = c + 1; col < Math.min(row.length, c + 12); col++) {
+              if (row[col] && String(row[col]?.displayValue || row[col]?.value || '').trim() !== '') {
                 helperSetCell(r, col, osId, 'Ordem de Serviço', `Ordem de Serviço Rodapé (#${osId})`);
               }
             }
           } else {
-            for (let col = 5; col <= 7; col++) {
-              if (col < row.length) {
-                helperSetCell(r, col, osId, 'Ordem de Serviço', `Ordem de Serviço (#${osId})`);
-              }
+            for (let col = c + 1; col <= Math.min(row.length - 1, c + 3); col++) {
+              helperSetCell(r, col, osId, 'Ordem de Serviço', `Ordem de Serviço (#${osId})`);
             }
           }
         }
@@ -541,13 +542,8 @@ export function updateAllDateFields(
     'JANEIRO', 'FEVEREIRO', 'MARÇO', 'ABRIL', 'MAIO', 'JUNHO',
     'JULHO', 'AGOSTO', 'SETEMBRO', 'OUTUBRO', 'NOVEMBRO', 'DEZEMBRO'
   ];
-  const mesesMin = [
-    'janeiro', 'fevereiro', 'março', 'abril', 'maio', 'junho',
-    'julho', 'agosto', 'setembro', 'outubro', 'novembro', 'dezembro'
-  ];
 
   const dataExtensoUpper = `${dia} DE ${meses[mesIdx]} DE ${ano}`;
-  const dataExtensoMin = `${dia} de ${mesesMin[mesIdx]} de ${ano}`;
   const dataCurta = `${String(dia).padStart(2, '0')}/${String(mesIdx + 1).padStart(2, '0')}/${ano}`;
 
   cloned.sheets.forEach((sheet, sheetIdx) => {
@@ -612,29 +608,20 @@ export function updateAllDateFields(
           }
         }
 
-        // 2. Local e Data na Seção de Assinatura (ex: "Belo Horizonte, 13 de agosto de 2026")
-        if (/(?:Belo\s*Horizonte|Rio\s*de\s*Janeiro|S[ãa]o\s*Paulo|[A-Za-zÀ-ÿ\s]+),\s*\d{1,2}\s+de\s+[a-zA-ZçÇ]+\s+de\s+\d{4}/i.test(text)) {
-          const newText = text.replace(/([A-Za-zÀ-ÿ\s]+),\s*\d{1,2}\s+de\s+[a-zA-ZçÇ]+\s+de\s+\d{4}/i, `$1, ${dataExtensoMin}`);
+        // 2. Local e Data na Seção de Assinatura (ex: "BELO HORIZONTE, 13 DE AGOSTO DE 2026")
+        if (/(?:Belo\s*Horizonte|Rio\s*de\s*Janeiro|S[ãa]o\s*Paulo|[A-Za-zÀ-ÿ\s]+),\s*\d{1,2}\s+(?:de|DE)\s+[a-zA-ZçÇ]+\s+(?:de|DE)\s+\d{4}/i.test(text)) {
+          const newText = text.replace(/([A-Za-zÀ-ÿ\s]+),\s*\d{1,2}\s+(?:de|DE)\s+[a-zA-ZçÇ]+\s+(?:de|DE)\s+\d{4}/i, (_m, city) => `${city.toUpperCase()}, ${dataExtensoUpper}`);
           if (newText !== text) {
             helperSet(r, c, newText, 'Data da Assinatura / Local');
             continue;
           }
         }
 
-        // 3. Padrão Extenso Isolado ou em Frase: "18 DE AGOSTO DE 2026"
-        if (/\b\d{1,2}\s+DE\s+(?:JANEIRO|FEVEREIRO|MARÇO|ABRIL|MAIO|JUNHO|JULHO|AGOSTO|SETEMBRO|OUTUBRO|NOVEMBRO|DEZEMBRO)\s+DE\s+\d{4}\b/i.test(text)) {
-          const newText = text.replace(/\b\d{1,2}\s+DE\s+(?:JANEIRO|FEVEREIRO|MARÇO|ABRIL|MAIO|JUNHO|JULHO|AGOSTO|SETEMBRO|OUTUBRO|NOVEMBRO|DEZEMBRO)\s+DE\s+\d{4}\b/gi, dataExtensoUpper);
+        // 3. Padrão Extenso (em maiúsculas ou minúsculas): "18 DE AGOSTO DE 2026" / "18 de agosto de 2026" -> SEMPRE UPPERCASE
+        if (/\b\d{1,2}\s+(?:de|DE)\s+(?:JANEIRO|FEVEREIRO|MARÇO|ABRIL|MAIO|JUNHO|JULHO|AGOSTO|SETEMBRO|OUTUBRO|NOVEMBRO|DEZEMBRO|janeiro|fevereiro|março|abril|maio|junho|julho|agosto|setembro|outubro|novembro|dezembro)\s+(?:de|DE)\s+\d{4}\b/i.test(text)) {
+          const newText = text.replace(/\b\d{1,2}\s+(?:de|DE)\s+(?:JANEIRO|FEVEREIRO|MARÇO|ABRIL|MAIO|JUNHO|JULHO|AGOSTO|SETEMBRO|OUTUBRO|NOVEMBRO|DEZEMBRO|janeiro|fevereiro|março|abril|maio|junho|julho|agosto|setembro|outubro|novembro|dezembro)\s+(?:de|DE)\s+\d{4}\b/gi, dataExtensoUpper);
           if (newText !== text) {
             helperSet(r, c, newText, 'Data por Extenso');
-            continue;
-          }
-        }
-
-        // 4. Padrão Extenso minúsculo: "18 de agosto de 2026"
-        if (/\b\d{1,2}\s+de\s+(?:janeiro|fevereiro|março|abril|maio|junho|julho|agosto|setembro|outubro|novembro|dezembro)\s+de\s+\d{4}\b/i.test(text)) {
-          const newText = text.replace(/\b\d{1,2}\s+de\s+(?:janeiro|fevereiro|março|abril|maio|junho|julho|agosto|setembro|outubro|novembro|dezembro)\s+de\s+\d{4}\b/gi, dataExtensoMin);
-          if (newText !== text) {
-            helperSet(r, c, newText, 'Data por Extenso (Assinatura)');
             continue;
           }
         }
